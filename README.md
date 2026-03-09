@@ -41,7 +41,7 @@
 ## 🛠️ 如何安装？
 
 1.  **安装插件**：首先确保浏览器安装了 [Tampermonkey (油猴)](https://www.tampermonkey.net/)。
-2.  **点击安装**：[点击此处获取 GitHub-Trail 脚本](#) *(替换为你的安装链接)*。
+2.  **点击安装**：[点击此处获取 GitHub-Trail 脚本](https://github.com/XiaozheQAQ/GitHub-Trail/blob/main/github-trail.user.js) 。
 3.  **开始使用**：刷新 GitHub 页面，点击右上角的 **🐾 Trail** 图标即可进入控制面板。
 
 ---
@@ -54,14 +54,7 @@
 
 ---
 
-## 📂 开发者的话
-
-我希望 GitHub-Trail 能成为你技术生涯的第一台“行车记录仪”。如果你觉得这个小工具对你有帮助，请给我一个 **Star ⭐**，这就是对我最大的支持！
-
----
-
 ### 🤝 参与贡献
-如果你有好的想法，欢迎提交 **Issue** 或 **拉取请求**。小白宝宝们的每一个建议，我们都会认真对待！
+如果你有好的想法，欢迎提交 **Issue** 或 **拉取请求**。
 
 ---
-© 2026 GitHub-Trail Team. Built with ❤️ for the Community.
