@@ -1,15 +1,20 @@
 ﻿// ==UserScript==
 // @name         GitHub Trail
 // @namespace    https://github.com/
-// @version      1.1.0
+// @version      1.2.0
 // @description  Record visited GitHub repositories and user profiles with local JSON + optional WebDAV sync.
 // @author       GitHub Trail
+// @license      AGPL-3.0-only
+// @homepageURL  https://github.com/XiaozheQAQ/GitHub-Trail
+// @supportURL   https://github.com/XiaozheQAQ/GitHub-Trail/issues
 // @match        https://github.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
 // @connect      *
 // @icon         https://pic.clami.fun/file/AgACAgUAAyEGAATfaZ8ZAAMDaazl6YjrLJDZejQQV0bUsffuyYgAAqkNaxuO4GhVK0MrNze09S0BAAMCAAN5AAM6BA.png
+// @noframes
 // @run-at       document-end
 // ==/UserScript==
 
@@ -26,10 +31,10 @@
   const LOGO_DATA_URL = "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 160 160'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%231f883d'/%3E%3Cstop offset='100%25' stop-color='%230ea5e9'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='160' height='160' rx='28' fill='%23ffffff'/%3E%3Ccircle cx='80' cy='80' r='58' fill='url(%23g)'/%3E%3Ctext x='80' y='95' text-anchor='middle' fill='%23ffffff' font-family='Segoe UI,Arial,sans-serif' font-size='56' font-weight='700'%3EGT%3C/text%3E%3C/svg%3E";
   const EX = ["/settings", "/features", "/marketplace", "/actions"];
   const RESERVED = new Set([
-    "about", "account", "actions", "blog", "collections", "contact", "copilot", "dashboard", "enterprise",
+    "about", "account", "actions", "apps", "blog", "codespaces", "collections", "contact", "copilot", "customer-stories", "dashboard", "discussions", "enterprise",
     "events", "explore", "features", "gist", "gists", "issues", "join", "login", "logout", "marketplace",
     "new", "notifications", "orgs", "organizations", "pricing", "pulls", "search", "security", "session",
-    "settings", "signup", "site", "sponsors", "teams", "topics", "trending", "users"
+    "readme", "resources", "settings", "signup", "site", "solutions", "sponsors", "team", "teams", "topics", "trending", "users"
   ]);
 
   const I18N = {
@@ -132,14 +137,18 @@
     last: { p: "", t: 0 }
   };
 
-  void init();
+  void init().catch((err) => {
+    console.error("[GitHub Trail]", err);
+    css(); ensureSidebar(); ensureTopbar();
+    status(String(err.message || err), "error");
+  });
 
   async function init() {
     st.d = normData(await getV(DATA_KEY, defData()));
     st.c = normCfg(await getV(CFG_KEY, defCfg()));
     st.ah = normalizeAiHistory(await getV(AI_HISTORY_KEY, defAiHistory()));
     cleanupLegacyUsers();
-    await setV(DATA_KEY, st.d);
+    watchData();
     await setV(CFG_KEY, st.c);
     await saveAiHistory();
     css();
@@ -148,13 +157,19 @@
     watchTopbar();
     bind();
     await route();
-    setTimeout(() => void route(), 300);
+
   }
 
   function bind() {
-    document.addEventListener("pjax:end", () => void route());
-    document.addEventListener("turbo:render", () => void route());
-    window.addEventListener("load", () => void route());
+    const onRoute=()=>void route().catch(err=>status(err.message,"error"));
+    document.addEventListener("pjax:end",onRoute);
+    document.addEventListener("turbo:render",onRoute);
+    document.addEventListener("turbo:load",onRoute);
+    window.addEventListener("popstate",onRoute);
+    window.addEventListener("load",onRoute);
+    document.addEventListener("keydown",ev=>{
+      if (ev.altKey && ev.shiftKey && ev.code==="KeyH") { ev.preventDefault(); toggleSidebar(); }
+    });
   }
 
   async function route() {
@@ -164,147 +179,67 @@
   }
 
   function css() {
-    if (document.getElementById("gt-style")) return;
+    if (st.u.root) return;
+    const host = document.createElement("div");
+    host.id = "github-trail-root";
+    st.u.host = host;
+    st.u.root = host.attachShadow({ mode: "open" });
     const el = document.createElement("style");
-    el.id = "gt-style";
-    el.textContent =
-` .gt-backdrop{position:fixed;inset:0;background:rgba(27,31,36,.42);z-index:80;display:none}
-  .gt-backdrop{background:linear-gradient(90deg,rgba(15,23,42,.01) 0%,rgba(15,23,42,.06) 56%,rgba(15,23,42,.12) 100%)}
-  .gt-backdrop.is-open{display:block}
-  .gt-sidebar{position:fixed;top:0;right:0;width:min(440px,94vw);height:100vh;z-index:81;transform:translateX(100%);transition:transform .24s cubic-bezier(.16,1,.3,1);display:flex;overflow:hidden}
-  .gt-sidebar::before{content:"";position:absolute;left:-24px;top:0;width:24px;height:100%;pointer-events:none;opacity:0;transition:opacity .18s ease;background:linear-gradient(to left,rgba(15,23,42,.12),rgba(15,23,42,0))}
-  .gt-sidebar.is-open{transform:translateX(0);box-shadow:-10px 0 28px rgba(15,23,42,.08),-2px 0 10px rgba(15,23,42,.05)}
-  .gt-sidebar.is-open::before{opacity:1}
-  .gt-shell{width:100%;height:100%;display:flex;flex-direction:column;background:var(--bgColor-muted,#f6f8fa);border-left:1px solid var(--borderColor-default,#d0d7de)}
-  .gt-body{flex:1;min-height:0;overflow:auto;padding:12px;background:var(--bgColor-muted,#f6f8fa);transition:opacity .2s ease,transform .2s ease}
-  .gt-body.gt-view-enter{animation:gt-view-in .24s cubic-bezier(.16,1,.3,1);will-change:transform,opacity}
-  @keyframes gt-view-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-  .gt-topbar-wrap{display:flex;align-items:center}
-  .gt-fab-wrap{position:fixed;right:20px;bottom:20px;z-index:120}
-  #gt-topbar-button{display:inline-flex;align-items:center;justify-content:center}
-  #gt-topbar-button.gt-fab{width:42px;height:42px;border-radius:999px;border:1px solid var(--borderColor-default,#d0d7de);background:var(--bgColor-default,#fff);box-shadow:0 8px 24px rgba(15,23,42,.15),0 1px 4px rgba(15,23,42,.08);transition:transform .12s ease,box-shadow .16s ease,background-color .16s ease}
-  #gt-topbar-button.gt-fab:hover{background:var(--bgColor-neutral-muted,#f6f8fa)}
-  #gt-topbar-button.gt-fab:active{transform:translateY(1px) scale(.95);box-shadow:0 4px 12px rgba(15,23,42,.12),0 1px 3px rgba(15,23,42,.08)}
-  #gt-topbar-button.gt-fab:focus-visible{outline:2px solid var(--fgColor-accent,#0969da);outline-offset:2px}
-  #gt-topbar-button svg{width:16px;height:16px}
-  .gt-head-actions{display:inline-flex;align-items:center;gap:6px}
-  .gt-head-actions .Button{min-width:28px}
-  .gt-brand{display:inline-flex;align-items:center;gap:6px}
-  .gt-shell .Box>.Box-header{background:var(--bgColor-subtle,#eef2f7);border-bottom:1px solid var(--borderColor-default,#d0d7de)}
-  .gt-tool-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
-  .gt-tool-groups{display:grid;gap:8px;margin-bottom:10px}
-  .gt-tool-group{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:8px;border:1px solid var(--borderColor-default,#d0d7de);border-radius:10px;background:var(--bgColor-default,#fff)}
-  .gt-tool-group.ai{background:linear-gradient(180deg,#fff 0%,#f6f8fa 100%)}
-  .gt-tool-group.danger{background:#fff7f7;border-color:#ffd8d3}
-  .gt-tool-btn{border:1px solid var(--borderColor-default,#d0d7de);background:var(--bgColor-default,#fff);color:var(--fgColor-default,#1f2328);border-radius:8px;padding:5px 10px;font-size:12px;line-height:18px;cursor:pointer;transition:background-color .14s ease,border-color .14s ease,transform .12s ease}
-  .gt-tool-btn:hover{background:var(--bgColor-neutral-muted,#f6f8fa);border-color:var(--borderColor-muted,#afb8c1)}
-  .gt-tool-btn:active{transform:translateY(1px)}
-  .gt-tool-btn:focus-visible{outline:2px solid var(--fgColor-accent,#0969da);outline-offset:2px}
-  .gt-tool-btn.is-primary{background:var(--button-primary-bgColor-rest,#1f883d);border-color:var(--button-primary-bgColor-rest,#1f883d);color:#fff}
-  .gt-tool-btn.is-primary:hover{background:var(--button-primary-bgColor-hover,#1a7f37)}
-  .gt-tool-btn.is-ai{background:linear-gradient(135deg,#1f883d 0%,#2da44e 100%);border-color:#1f883d;color:#fff}
-  .gt-tool-btn.is-ai:hover{background:linear-gradient(135deg,#1a7f37 0%,#238636 100%);border-color:#1a7f37}
-  .gt-tool-btn.is-danger{color:var(--fgColor-danger,#cf222e)}
-  .gt-tool-btn:disabled{opacity:.6;cursor:not-allowed}
-  .gt-list-box{overflow:hidden;border-radius:10px}
-  .gt-list-box .Box-row{padding:8px 12px;background:var(--bgColor-default,#fff);border-radius:0!important}
-  .gt-list-box .Box-row:first-of-type{border-top-left-radius:0!important;border-top-right-radius:0!important}
-  .gt-list-box .Box-row:last-of-type{border-bottom-left-radius:10px;border-bottom-right-radius:10px}
-  .gt-list-empty{padding:10px 12px;color:var(--fgColor-muted,#59636e);font-size:12px}
-  .gt-meta{display:flex;justify-content:space-between;margin-top:4px;font-size:12px;color:var(--fgColor-muted,#59636e)}
-  .gt-actions-row{display:flex;gap:8px;flex-wrap:wrap}
-  .gt-actions-row .Button{min-height:28px}
-  .gt-status{margin-top:8px;font-size:12px}
-  .gt-status.error{color:var(--fgColor-danger,#cf222e)}
-  .gt-status.info{color:var(--fgColor-muted,#59636e)}
-  .gt-ai-issue{margin-top:8px;padding:8px 10px;border:1px solid #ffb8bd;background:#fff1f2;border-radius:8px;font-size:12px;color:#cf222e;line-height:1.5}
-  .gt-view-all-wrap{text-align:center;margin:8px 0 10px}
-  .gt-view-all{border:0;background:transparent;padding:0;color:var(--fgColor-accent,#0969da);cursor:pointer;font-size:12px}
-  .gt-settings-grid{display:grid;grid-template-columns:1fr;gap:8px}
-  .gt-settings-grid textarea{min-height:76px;resize:vertical}
-  .gt-settings-actions{display:flex;gap:8px;flex-wrap:wrap}
-  .gt-settings-danger{margin-top:10px;padding:10px;border:1px solid #ffd8d3;border-radius:10px;background:#fff7f7}
-  .gt-settings-danger .gt-danger-note{font-size:12px;color:#9a3412;margin-bottom:8px}
-  .gt-ai-note{font-size:12px;color:var(--fgColor-muted,#59636e)}
-  .gt-ai-pre{white-space:pre-wrap;word-break:break-word;line-height:1.55;margin:0}
-  .gt-ai-box{background:var(--bgColor-default,#fff);border:1px solid var(--borderColor-default,#d0d7de);border-radius:10px;padding:12px}
-  .gt-chat-list{display:flex;flex-direction:column;gap:10px;min-width:0;align-items:flex-start}
-  .gt-chat-msg{border:1px solid var(--borderColor-default,#d0d7de);border-radius:10px;background:var(--bgColor-default,#fff);padding:10px;min-width:0;width:90%;max-width:90%;overflow:hidden}
-  .gt-chat-msg.is-user{background:#f0f7ff;border-color:#b6d7ff;align-self:flex-end}
-  .gt-chat-role{font-size:11px;color:var(--fgColor-muted,#59636e);margin-bottom:6px}
-  .gt-chat-content{font-size:13px;line-height:1.6;color:var(--fgColor-default,#1f2328);overflow-wrap:anywhere;word-break:break-all;max-width:100%}
-  .gt-chat-content *{max-width:100%;box-sizing:border-box;overflow-wrap:anywhere;word-break:break-all}
-  .gt-chat-content p{margin:0 0 8px 0}
-  .gt-chat-content p:last-child{margin-bottom:0}
-  .gt-chat-content pre{padding:10px;overflow-x:auto;overflow-y:hidden;background:#f6f8fa;border:1px solid #d0d7de;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-all;max-width:100%}
-  .gt-chat-content code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;overflow-wrap:anywhere;word-break:break-all}
-  .gt-ai-thread-viewport{max-height:min(42vh,360px);overflow:auto;padding-right:2px;min-width:0}
-  .gt-ai-followup{display:grid;gap:8px;margin-top:10px;position:relative}
-  .gt-ai-followup textarea{min-height:86px;resize:vertical}
-  .gt-ai-history{margin-bottom:10px;border:1px solid var(--borderColor-default,#d0d7de);border-radius:10px;background:var(--bgColor-default,#fff)}
-  .gt-ai-history summary{cursor:pointer;padding:10px 12px;font-size:12px;color:var(--fgColor-muted,#59636e)}
-  .gt-ai-history-list{padding:0 10px 10px 10px;display:grid;gap:8px}
-  .gt-ai-history-item{border:1px solid var(--borderColor-muted,#d8dee4);border-radius:8px;padding:8px}
-  .gt-ai-history-item .meta{font-size:11px;color:var(--fgColor-muted,#59636e)}
-  .gt-ai-history-item button{margin-top:6px}
-  .gt-about-wrap{display:grid;gap:12px}
-  .gt-about-card{position:relative;overflow:hidden;padding:14px;border:1px solid #e2e8f0;border-radius:14px;background:linear-gradient(160deg,#fff 0%,#f8fafc 68%,#eef4f8 100%);box-shadow:0 10px 24px rgba(15,23,42,.06);animation:gt-about-in .28s cubic-bezier(.16,1,.3,1)}
-  .gt-about-hero{display:flex;align-items:center;gap:12px}
-  .gt-about-logo-wrap{flex:0 0 auto;width:86px;height:86px;border-radius:14px;background:linear-gradient(180deg,#ffffff 0%,#f7fafc 100%);border:1px solid #e5e7eb;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 1px 0 rgba(255,255,255,.8),0 6px 16px rgba(15,23,42,.08)}
-  .gt-about-logo{width:72px;height:72px;object-fit:contain;user-select:none;-webkit-user-drag:none;animation:gt-logo-float 3.2s ease-in-out infinite}
-  .gt-about-title{margin:0;font-size:18px;line-height:1.2;color:#0f172a}
-  .gt-about-sub{margin:6px 0 0 0;font-size:12px;line-height:1.55;color:#475569}
-  .gt-about-text{font-size:13px;line-height:1.65;color:#334155}
-  .gt-about-text p{margin:0 0 8px 0}
-  .gt-about-text p:last-child{margin-bottom:0}
-  .gt-about-list{margin:6px 0 0 18px;padding:0}
-  .gt-about-list li{margin:6px 0}
-  .gt-about-version{margin-top:10px;font-size:12px;color:#64748b}
-  @keyframes gt-logo-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
-  @keyframes gt-about-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-  @media (prefers-reduced-motion: reduce){
-    .gt-sidebar,.gt-body,#gt-topbar-button.gt-fab,.gt-tool-btn,.gt-about-card,.gt-about-logo{transition:none!important;animation:none!important}
+    el.textContent = `
+:host{all:initial;position:fixed;inset:0;z-index:2147483000;pointer-events:none;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.5;color:var(--gt-fg);--gt-bg:#ffffff;--gt-surface:#f6f8fa;--gt-hover:#eef2f6;--gt-border:#d1d9e0;--gt-fg:#1f2328;--gt-muted:#59636e;--gt-accent:#0969da;--gt-green:#1f883d;--gt-danger:#cf222e;--gt-tint:#ddf4ff;color-scheme:light}
+:host([data-theme=dark]){--gt-bg:#0d1117;--gt-surface:#161b22;--gt-hover:#212830;--gt-border:#30363d;--gt-fg:#f0f6fc;--gt-muted:#919da9;--gt-accent:#79c0ff;--gt-green:#238636;--gt-danger:#ff7b72;--gt-tint:#152a40;color-scheme:dark}
+*,*::before,*::after{box-sizing:border-box} [hidden]{display:none!important} button,input,select,textarea{font:inherit;color:inherit} button,a,input,select,textarea,summary{touch-action:manipulation} button{cursor:pointer} button:disabled{opacity:.5;cursor:not-allowed} button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid var(--gt-accent);outline-offset:2px} a{color:var(--gt-accent);text-decoration:none} a:hover{text-decoration:underline} svg{display:block;flex-shrink:0} p{margin:0 0 12px} h3{margin:0} label{display:block} input,select,textarea{min-width:0;max-width:100%} input:not([type=checkbox]):not([type=range]),select,textarea{width:100%;border:1px solid var(--gt-border);border-radius:8px;background:var(--gt-bg);padding:9px 10px;line-height:20px} textarea{resize:vertical;min-height:80px} input[type=search]::-webkit-search-cancel-button{-webkit-appearance:none} input[type=checkbox]{accent-color:var(--gt-green)} input[type=range]{width:100%;accent-color:var(--gt-green)} button{border:1px solid var(--gt-border);border-radius:8px;padding:7px 11px;background:var(--gt-bg);line-height:20px} button:hover:not(:disabled){background:var(--gt-hover)}
+.gt-backdrop{pointer-events:auto;position:fixed;inset:0;background:#0005;backdrop-filter:blur(2px)} .gt-sidebar{pointer-events:auto;position:fixed;inset:0 0 0 auto;width:min(480px,100vw);height:100%;height:100dvh;background:var(--gt-bg);box-shadow:-12px 0 48px #0003;border-left:1px solid var(--gt-border);display:flex;flex-direction:column} .gt-shell{display:flex;flex-direction:column;width:100%;height:100%;min-width:0} .gt-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:18px 20px;border-bottom:1px solid var(--gt-border);flex-shrink:0;background:var(--gt-bg)} .gt-brand{display:flex;align-items:center;gap:10px;font-size:16px} .gt-brand>span{color:var(--gt-muted)} .gt-head-actions{display:flex;gap:4px} .gt-head-actions button{border:0;padding:8px;display:grid;place-items:center;background:transparent;width:34px;height:34px} .gt-body{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:20px;scrollbar-width:thin;scrollbar-color:var(--gt-border) transparent} .gt-fab-wrap{pointer-events:auto;position:fixed;right:max(20px,env(safe-area-inset-right));bottom:max(20px,env(safe-area-inset-bottom))} #gt-topbar-button{display:flex;align-items:center;gap:8px;border-radius:24px;padding:11px 16px;color:var(--gt-fg);background:var(--gt-bg);box-shadow:0 4px 18px #0003;border:1px solid var(--gt-border)} #gt-topbar-button svg{color:var(--gt-accent)}
+.gt-intro{display:flex;align-items:start;justify-content:space-between;gap:12px;margin-bottom:18px} .gt-eyebrow{font-size:11px;letter-spacing:1.4px;color:var(--gt-muted);font-weight:600;margin-bottom:6px} .gt-intro h2{font-size:23px;line-height:1.3;margin:0 0 6px;letter-spacing:-.5px} .gt-subtitle,.gt-ai-note,.color-fg-muted,.gt-danger-note{font-size:12px;color:var(--gt-muted)} .gt-count{font-size:12px;white-space:nowrap;color:var(--gt-muted);padding-top:5px} .gt-search{position:relative;margin-bottom:10px} .gt-search input{padding-left:34px!important;padding-right:38px!important} .gt-search>span{position:absolute;left:12px;top:9px;color:var(--gt-muted);font-size:17px} .gt-search button{position:absolute;right:4px;top:4px;border:0;background:transparent;padding:4px 8px} .gt-filter-row{display:grid;grid-template-columns:1fr 1fr 1.25fr;gap:8px;margin-bottom:12px} .gt-filter-row select{font-size:12px;padding:7px 5px} .gt-view-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:16px 0 12px} .BtnGroup{display:flex;gap:3px;padding:3px;border-radius:9px;background:var(--gt-surface);border:1px solid var(--gt-border)} .BtnGroup button{border:0;font-size:12px;padding:4px 9px;background:transparent;color:var(--gt-muted)} .BtnGroup button[aria-pressed=true]{background:var(--gt-bg);color:var(--gt-fg);box-shadow:0 1px 4px #0002} .gt-star-filter{font-size:12px;padding:6px 9px;color:var(--gt-muted)} .gt-star-filter[aria-pressed=true]{color:var(--gt-accent);background:var(--gt-tint)}
+.Box{border:1px solid var(--gt-border);border-radius:12px;background:var(--gt-bg);overflow:hidden} .Box-header{padding:10px 13px;background:var(--gt-surface);border-bottom:1px solid var(--gt-border);font-size:12px;color:var(--gt-muted);display:flex;align-items:center;justify-content:space-between} .Box-body{padding:14px} .gt-list-box{margin-bottom:12px} .gt-record{position:relative;display:flex;gap:10px;align-items:center;padding:12px;border-bottom:1px solid var(--gt-border)} .gt-record:last-child{border-bottom:0} .gt-record:hover{background:var(--gt-surface)} .gt-record-link{display:flex;align-items:center;gap:10px;min-width:0;flex:1;color:var(--gt-fg)} .gt-record-link:hover{text-decoration:none} .gt-record-icon{display:grid;place-items:center;width:32px;height:32px;flex-shrink:0;border:1px solid var(--gt-border);background:var(--gt-surface);border-radius:8px;color:var(--gt-muted)} .gt-record-info{min-width:0;flex:1} .gt-record-name{display:block;font-size:13px;font-weight:600;overflow-wrap:anywhere} .gt-record-link:hover .gt-record-name{color:var(--gt-accent)} .gt-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--gt-muted);margin-top:5px} .gt-record-actions{display:flex;gap:1px} .gt-record-actions button{padding:5px;border:0;background:transparent;color:var(--gt-muted);width:26px;height:30px} .gt-record-actions button[aria-pressed=true]{color:var(--gt-accent)} .gt-record-actions button[data-delete]:hover{color:var(--gt-danger)} .Label{font-size:10px;border:1px solid var(--gt-border);padding:0 5px;border-radius:12px} .gt-list-empty{text-align:center;padding:32px 18px;color:var(--gt-muted);font-size:13px} .gt-list-empty strong{display:block;color:var(--gt-fg);font-size:15px;margin-bottom:6px} .gt-list-empty button{margin-top:12px} .gt-tool-row{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0} .gt-tool-btn{font-size:12px} .is-primary,.Button--primary{background:var(--gt-green);border-color:var(--gt-green);color:#fff} .is-primary:hover:not(:disabled),.Button--primary:hover:not(:disabled){background:var(--gt-green);filter:brightness(1.12)} .is-danger{color:var(--gt-danger)} .gt-history-tools{display:flex;flex-wrap:wrap;gap:8px;padding-top:14px;border-top:1px solid var(--gt-border)} .gt-history-tools button:last-of-type{margin-left:auto} .gt-view-all-wrap{text-align:center;margin:16px 0} .gt-view-all{width:100%;color:var(--gt-accent);font-size:12px} .gt-status{font-size:12px;padding:10px 12px;background:var(--gt-tint);border-radius:8px;overflow-wrap:anywhere;margin-bottom:12px} .gt-status:empty{display:none} .gt-status.error,.gt-ai-issue{color:var(--gt-danger);background:var(--gt-surface)} .gt-undo{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;margin-bottom:12px;background:var(--gt-tint);border-radius:8px;font-size:12px}
+.gt-settings-grid{display:grid;gap:12px} .gt-settings-grid label{font-size:12px;font-weight:600} .gt-settings-grid label>input,.gt-settings-grid label>select,.gt-settings-grid label>textarea{display:block;margin-top:6px;font-weight:400} .gt-settings-grid .gt-check{display:flex;gap:8px;align-items:center;font-weight:400} .gt-settings-grid .gt-check input{margin:0} .gt-settings-section{margin-bottom:14px} details.Box>summary{list-style:none;cursor:pointer;padding:14px;font-weight:600;background:var(--gt-surface)} details.Box>summary::after{content:'+';float:right;color:var(--gt-muted)} details.Box[open]>summary::after{content:'−'} .gt-settings-actions{position:sticky;bottom:-20px;padding:12px 0 20px;background:var(--gt-bg);display:flex;gap:10px} .gt-settings-actions button{flex:1} .gt-settings-danger{margin-top:20px;border-top:1px solid var(--gt-border);padding:16px 0}.gt-danger-note{margin-bottom:10px} .gt-ai-note{line-height:1.7;margin-bottom:10px}.gt-ai-issue{padding:12px;border:1px solid var(--gt-border);border-radius:8px;margin:12px 0;font-size:12px}
+.gt-ai-box{padding:20px;border:1px solid var(--gt-border);border-radius:12px;background:var(--gt-surface)} .gt-chat-list{display:flex;flex-direction:column;gap:14px} .gt-chat-msg{padding:12px;border:1px solid var(--gt-border);border-radius:12px;min-width:0}.gt-chat-msg.is-user{background:var(--gt-tint)} .gt-chat-role{font-size:11px;color:var(--gt-muted);margin-bottom:8px}.gt-chat-content{font-size:13px;line-height:1.7;overflow-wrap:anywhere}.gt-chat-content p:last-child{margin:0}.gt-chat-content pre{overflow:auto;background:var(--gt-surface);padding:10px;border-radius:8px;white-space:pre-wrap}.gt-chat-content code{font-family:ui-monospace,Consolas,monospace;font-size:12px}.gt-chat-content ul,.gt-chat-content ol{padding-left:20px}.gt-chat-content h1,.gt-chat-content h2,.gt-chat-content h3{font-size:16px;margin:14px 0 8px}.gt-ai-thread-viewport{min-width:0}.gt-ai-followup{display:grid;gap:8px;margin-top:18px}.gt-ai-history{border:1px solid var(--gt-border);border-radius:10px;margin-bottom:14px}.gt-ai-history summary{padding:10px;font-size:12px;color:var(--gt-muted);cursor:pointer}.gt-ai-history-list{padding:10px;display:grid;gap:8px;max-height:240px;overflow:auto}.gt-ai-history-item{padding:10px;border:1px solid var(--gt-border);border-radius:8px}.gt-ai-history-item .meta{color:var(--gt-muted);font-size:11px;margin:5px 0}.gt-about-wrap{display:grid;gap:14px}.gt-about-card{padding:18px;border:1px solid var(--gt-border);border-radius:12px;background:var(--gt-surface)}.gt-about-hero{display:flex;align-items:center;gap:14px}.gt-about-logo{width:54px;height:54px;border-radius:12px}.gt-about-title{font-size:18px}.gt-about-sub,.gt-about-version{font-size:12px;color:var(--gt-muted);margin:6px 0}.gt-about-text{font-size:13px;line-height:1.8}.gt-about-list{padding-left:18px}.gt-about-list li{margin:8px 0}.mb-2{margin-bottom:8px}.mb-3{margin-bottom:14px}.text-small{font-size:12px}
+@media(max-width:380px){.gt-body{padding:14px}.gt-head{padding:14px}.gt-filter-row{gap:5px}.gt-record{padding:10px;gap:5px}.gt-record-icon{display:none}.gt-settings-actions{bottom:-14px}.gt-intro h2{font-size:21px}.gt-fab-wrap{right:12px;bottom:12px}}
+@media(prefers-reduced-motion:no-preference){.gt-sidebar.is-open{animation:gt-in .18s ease-out}@keyframes gt-in{from{opacity:.5;transform:translateX(24px)}to{opacity:1;transform:none}}}
+`;
+    st.u.root.appendChild(el);
+    document.body.appendChild(host);
+    applyTheme();
   }
-  .gt-inline-icon{display:inline-flex;vertical-align:middle}`;
-    document.head.appendChild(el);
+
+  function tr(zh, en) { return st.c.language === "en" ? en : zh; }
+
+  function applyTheme() {
+    if (!st.u.host) return;
+    const html = document.documentElement;
+    const mode = html.dataset.colorMode;
+    const dark = mode === "dark" || (mode !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    const theme = st.c.ui.theme || "auto";
+    st.u.host.dataset.theme = theme === "auto" ? (dark ? "dark" : "light") : theme;
+    st.u.host.lang = st.c.language;
   }
 
   function ensureSidebar() {
     if (st.u.mounted) return;
     const bd = document.createElement("div");
-    bd.className = "gt-backdrop";
+    bd.className = "gt-backdrop"; bd.hidden = true;
     bd.addEventListener("click", closeSidebar);
-
     const sb = document.createElement("aside");
-    sb.className = "gt-sidebar";
-    sb.innerHTML =
-`<div class="gt-shell Box color-shadow-large">
-  <div class="Box-header d-flex flex-items-center flex-justify-between">
-    <div class="gt-brand"><span class="gt-inline-icon">${SVG.g}</span><strong id="gt-title"></strong></div>
-    <div class="gt-head-actions">
-      <button id="gt-toggle" type="button" class="Button Button--invisible Button--small"></button>
-      <button id="gt-about" type="button" class="Button Button--invisible Button--small"></button>
-      <button id="gt-close" type="button" class="Button Button--invisible Button--small"></button>
-    </div>
-  </div>
-  <div id="gt-body" class="gt-body"></div>
-</div>`;
-
-    document.body.appendChild(bd);
-    document.body.appendChild(sb);
-
-    st.u.bd = bd;
-    st.u.sb = sb;
-    st.u.title = sb.querySelector("#gt-title");
-    st.u.tbtn = sb.querySelector("#gt-toggle");
-    st.u.abtn = sb.querySelector("#gt-about");
-    st.u.cbtn = sb.querySelector("#gt-close");
-    st.u.body = sb.querySelector("#gt-body");
-    st.u.mounted = true;
-
-    st.u.tbtn?.addEventListener("click", handleToggleAction);
-    st.u.abtn?.addEventListener("click", handleAboutAction);
-    st.u.cbtn?.addEventListener("click", closeSidebar);
+    sb.className = "gt-sidebar"; sb.id = "gt-sidebar"; sb.hidden = true;
+    sb.setAttribute("role", "dialog"); sb.setAttribute("aria-modal", "true"); sb.setAttribute("aria-labelledby", "gt-title");
+    sb.innerHTML = `<div class="gt-shell"><header class="gt-head"><div class="gt-brand"><span>${SVG.h}</span><strong id="gt-title"></strong></div><div class="gt-head-actions"><button id="gt-toggle" type="button"></button><button id="gt-about" type="button"></button><button id="gt-close" type="button"></button></div></header><div id="gt-body" class="gt-body"></div></div>`;
+    st.u.root.append(bd, sb);
+    Object.assign(st.u, { bd, sb, title:sb.querySelector("#gt-title"), tbtn:sb.querySelector("#gt-toggle"), abtn:sb.querySelector("#gt-about"), cbtn:sb.querySelector("#gt-close"), body:sb.querySelector("#gt-body"), mounted:true });
+    st.u.tbtn.addEventListener("click", handleToggleAction);
+    st.u.abtn.addEventListener("click", handleAboutAction);
+    st.u.cbtn.addEventListener("click", closeSidebar);
+    sb.addEventListener("keydown", (ev) => {
+      // Keep GitHub's single-key shortcuts away from the panel's inputs.
+      ev.stopPropagation();
+      if (ev.altKey && ev.shiftKey && ev.code === "KeyH") { ev.preventDefault(); closeSidebar(); return; }
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); closeSidebar(); }
+      if (ev.key === "Tab") {
+        const items = [...sb.querySelectorAll('button,a[href],input,select,textarea,summary,[tabindex="0"]')].filter(n => !n.disabled && n.getClientRects().length);
+        const first=items[0], last=items.at(-1), active=st.u.root.activeElement;
+        if (ev.shiftKey && active===first) { ev.preventDefault(); last?.focus(); }
+        else if (!ev.shiftKey && active===last) { ev.preventDefault(); first?.focus(); }
+      }
+    });
     renderSidebar();
   }
 
@@ -325,52 +260,44 @@
   }
 
   function ensureTopbar() {
-    const wrap = getWrap();
-    const btn = getBtn();
+    if (!st.u.root) return;
+    if (!st.u.host.isConnected) document.body.appendChild(st.u.host);
+    const wrap = getWrap(), btn = getBtn();
     if (!wrap.contains(btn)) wrap.appendChild(btn);
-    wrap.className = "gt-topbar-wrap gt-fab-wrap";
-    btn.className = "Button Button--secondary Button--iconOnly gt-fab";
-    if (!document.body.contains(wrap)) document.body.appendChild(wrap);
+    wrap.className = "gt-fab-wrap"; wrap.hidden = st.u.open;
+    if (!wrap.isConnected) st.u.root.appendChild(wrap);
   }
 
   function watchTopbar() {
     if (st.u.obs) return;
-    let lock = false;
-    const o = new MutationObserver(() => {
-      if (lock) return;
-      lock = true;
+    let scheduled = false, path = location.pathname;
+    st.u.obs = new MutationObserver(() => {
+      if (scheduled) return;
+      scheduled = true;
       requestAnimationFrame(() => {
-        lock = false;
-        ensureTopbar();
+        scheduled = false; ensureTopbar(); applyTheme();
+        if (path !== location.pathname) { path=location.pathname; void route().catch(err => status(err.message,"error")); }
       });
     });
-    o.observe(document.documentElement, { childList: true, subtree: true });
-    st.u.obs = o;
+    st.u.obs.observe(document.documentElement, { childList:true, subtree:true, attributes:true, attributeFilter:["data-color-mode","data-dark-theme","data-light-theme"] });
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
   }
 
   function getWrap() {
-    let w = document.getElementById("gt-topbar-wrap");
-    if (w) return w;
-    w = document.createElement("div");
-    w.id = "gt-topbar-wrap";
-    w.className = "gt-topbar-wrap";
+    let w = st.u.root.querySelector("#gt-topbar-wrap");
+    if (!w) { w=document.createElement("div"); w.id="gt-topbar-wrap"; }
     return w;
   }
 
   function getBtn() {
-    let b = document.getElementById("gt-topbar-button");
+    let b = st.u.topBtn;
     if (!b) {
-      b = document.createElement("button");
-      b.id = "gt-topbar-button";
-      b.type = "button";
-      b.className = "AppHeader-button";
-      b.innerHTML = SVG.h;
-      b.addEventListener("click", toggleSidebar);
+      b=document.createElement("button"); b.id="gt-topbar-button"; b.type="button";
+      b.addEventListener("click",toggleSidebar); st.u.topBtn=b;
     }
-    st.u.topBtn = b;
-    const a = t("ta");
-    b.title = a;
-    b.setAttribute("aria-label", a);
+    b.innerHTML = `${SVG.h}<span>Trail</span>`;
+    b.title=t("ta"); b.setAttribute("aria-label",t("ta")); b.setAttribute("aria-haspopup","dialog");
+    b.setAttribute("aria-expanded",String(st.u.open)); b.setAttribute("aria-controls","gt-sidebar");
     return b;
   }
 
@@ -387,20 +314,26 @@
   }
 
   function openSidebar() {
+    if (st.u.open) return;
     ensureSidebar();
-    clearStatus();
-    st.u.open = true;
-    st.u.view = "history";
-    st.u.showAll = false;
-    st.u.sb?.classList.add("is-open");
-    st.u.bd?.classList.add("is-open");
-    renderSidebar();
+    st.u.previousFocus=document.activeElement; st.u.open=true;
+    st.u.sb.hidden=false; st.u.bd.hidden=false; st.u.sb.classList.add("is-open");
+    st.u.oldOverflow=document.body.style.overflow; document.body.style.overflow="hidden";
+    st.u.inertNodes=[...document.body.children].filter(n=>n!==st.u.host && !n.inert);
+    st.u.inertNodes.forEach(n=>n.inert=true);
+    ensureTopbar(); renderSidebar();
+    (st.u.body.querySelector("#gt-search") || st.u.cbtn).focus();
   }
 
   function closeSidebar() {
-    st.u.open = false;
-    st.u.sb?.classList.remove("is-open");
-    st.u.bd?.classList.remove("is-open");
+    if (!st.u.open) return;
+    st.u.open=false; st.u.sb.hidden=true; st.u.bd.hidden=true; st.u.sb.classList.remove("is-open");
+    document.body.style.overflow=st.u.oldOverflow || "";
+    st.u.inertNodes?.forEach(n=>n.inert=false); st.u.inertNodes=[];
+    ensureTopbar();
+    const previous=st.u.previousFocus;
+    if (previous?.isConnected && previous!==document.body && previous!==st.u.host) previous.focus();
+    else st.u.topBtn?.focus();
   }
 
   function renderSidebar() {
@@ -442,139 +375,115 @@
   }
 
   function renderHistory() {
-    const mode = st.c.ui.listMode;
-    const repo = sort(st.d.repo).map((x) => ({ ...x, __t: "repo" }));
-    const user = sort(st.d.user).map((x) => ({ ...x, __t: "user" }));
-    const all = [...repo, ...user].sort((a, b) => ts(b.lastVisitedAt) - ts(a.lastVisitedAt));
-
-    const limit = st.u.showAll ? Number.MAX_SAFE_INTEGER : 10;
-    const rr = repo.slice(0, limit);
-    const uu = user.slice(0, limit);
-    const aa = all.slice(0, limit);
-    const total = mode === "merged" ? all.length : repo.length + user.length;
-    const hidden = mode === "merged"
-      ? Math.max(all.length - aa.length, 0)
-      : Math.max(repo.length - rr.length, 0) + Math.max(user.length - uu.length, 0);
-
-    const splitCls = mode === "split" ? "Button--primary" : "";
-    const mergedCls = mode === "merged" ? "Button--primary" : "";
-    const body = mode === "merged"
-      ? `<div class="Box gt-list-box mb-2"><div class="Box-header"><strong class="text-small">${e(t("sm"))}</strong></div>${rows(aa, "merged")}</div>`
-      : `<div class="Box gt-list-box mb-2"><div class="Box-header"><strong class="text-small">${e(t("sr"))}</strong></div>${rows(rr, "repo")}</div>
-         <div class="Box gt-list-box mb-2"><div class="Box-header"><strong class="text-small">${e(t("su"))}</strong></div>${rows(uu, "user")}</div>`;
-
-    const v = total > 10
-      ? `<div class="gt-view-all-wrap"><button id="gt-va" class="gt-view-all" type="button">${e(st.u.showAll ? t("vl") : t("va"))}</button></div>`
-      : "";
-
-    const syncBtnHtml = st.c.webdav.enabled
-      ? `<button id="gt-sync" type="button" class="gt-tool-btn is-primary">${e(t("sn"))}</button>`
-      : "";
-    const aiIssueHtml = st.u.aiIssue
-      ? `<div id="gt-ai-issue" class="gt-ai-issue">${e(st.u.aiIssue)}</div>`
-      : "";
-
-    st.u.body.innerHTML =
-`<div class="gt-tool-groups">
-  <div class="gt-tool-group data">
-    ${syncBtnHtml}
-    <button id="gt-export" type="button" class="gt-tool-btn">${e(t("ex"))}</button>
-    <button id="gt-import" type="button" class="gt-tool-btn">${e(t("im"))}</button>
-    <button id="gt-ai" type="button" class="gt-tool-btn is-ai">${e(t("ai"))}</button>
-    <input id="gt-import-file" type="file" accept="application/json" style="display:none" />
-  </div>
-</div>
-<div class="mb-2"><div class="BtnGroup">
-  <button id="gt-ms" type="button" class="Button Button--small ${splitCls}">${e(t("ms"))}</button>
-  <button id="gt-mm" type="button" class="Button Button--small ${mergedCls}">${e(t("mm"))}</button>
-</div></div>
+    const search=st.u.search || "", type=st.u.type || "all", period=st.u.period || "all", order=st.u.order || "recent";
+    const items=[...Object.values(st.d.repo).map(x=>({...x,__t:"repo"})),...Object.values(st.d.user).map(x=>({...x,__t:"user"}))];
+    const cutoff=period==="all" ? 0 : Date.now()-(period==="week" ? 7 : 30)*86400000;
+    const terms=search.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    const filtered=items.filter(x=>(type==="all" || x.__t===type) && (!st.u.pinnedOnly || x.pinned) && ts(x.lastVisitedAt)>=cutoff && terms.every(q=>`${x.owner||""}/${x.repo||""} ${x.username||""}`.toLowerCase().includes(q)));
+    filtered.sort((a,b)=>order==="visits" ? b.visitCount-a.visitCount || ts(b.lastVisitedAt)-ts(a.lastVisitedAt) : order==="name" ? a.key.localeCompare(b.key) : ts(b.lastVisitedAt)-ts(a.lastVisitedAt));
+    const limit=st.u.limit || 30, mode=st.c.ui.listMode;
+    const shown=filtered.slice(0,limit);
+    const group=(title,list)=>`<section class="Box gt-list-box"><div class="Box-header"><strong>${e(title)}</strong><span>${list.length}</span></div>${rows(list,mode)}</section>`;
+    const body=shown.length ? mode==="merged" ? group(tr("最近的足迹","Your trail"),shown) : ["repo","user"].map(kind=>{const list=shown.filter(x=>x.__t===kind);return list.length ? group(t(kind==="repo"?"sr":"su"),list):"";}).join("") : `<div class="Box gt-list-empty"><strong>${e(items.length ? tr("没有找到匹配记录","No matching history") : tr("从下一次探索开始","Your next discovery starts here"))}</strong>${e(items.length ? tr("试试其他关键词，或清除筛选条件。","Try another keyword or clear your filters.") : tr("浏览 GitHub 仓库和用户主页后，足迹会自动出现在这里。","Visit a repository or profile and it will appear here."))}${items.length ? `<br><button id="gt-reset">${e(tr("清除筛选","Clear filters"))}</button>`:""}</div>`;
+    st.u.body.innerHTML=`
+<div class="gt-intro"><div><div class="gt-eyebrow">GITHUB TRAIL</div><h2>${e(tr("找回你的探索","Pick up your trail"))}</h2><div class="gt-subtitle">${e(st.c.recordingPaused ? tr("记录已暂停 · 已有足迹仍可查看","Recording paused · Your history is still here") : tr("每次发现，都有迹可循。","Every discovery, easy to find again."))}</div></div><span class="gt-count">${items.length} ${e(tr("条足迹","saved"))}</span></div>
+<div id="gt-status" role="status" aria-live="polite" class="gt-status ${e(st.u.statusType)}"></div>
+${st.u.deleted ? `<div class="gt-undo"><span>${e(tr("已移除一条记录","Record removed"))}</span><button id="gt-undo" type="button" ${st.u.syncing?"disabled":""}>${e(tr("撤销","Undo"))}</button></div>`:""}
+<div class="gt-search"><span aria-hidden="true">⌕</span><input id="gt-search" type="search" autocomplete="off" aria-label="${e(tr("搜索历史记录","Search history"))}" placeholder="${e(tr("搜索仓库、作者或用户…","Search repositories, owners, or users…"))}" value="${e(search)}"><button id="gt-search-clear" type="button" aria-label="${e(tr("清空搜索","Clear search"))}" ${search?"":"hidden"}>×</button></div>
+<div class="gt-filter-row"><select id="gt-type" aria-label="${e(tr("记录类型","Record type"))}"><option value="all">${e(tr("全部类型","All types"))}</option><option value="repo">${e(t("sr"))}</option><option value="user">${e(t("su"))}</option></select><select id="gt-period" aria-label="${e(tr("时间范围","Time range"))}"><option value="all">${e(tr("全部时间","All time"))}</option><option value="week">${e(tr("最近 7 天","Last 7 days"))}</option><option value="month">${e(tr("最近 30 天","Last 30 days"))}</option></select><select id="gt-sort" aria-label="${e(tr("排序方式","Sort by"))}"><option value="recent">${e(tr("最近访问","Recently visited"))}</option><option value="visits">${e(tr("访问次数","Most visited"))}</option><option value="name">${e(tr("名称排序","Name A–Z"))}</option></select></div>
+<div class="gt-view-row"><div class="BtnGroup"><button id="gt-mm" aria-pressed="${mode==="merged"}">${e(tr("全部足迹","Timeline"))}</button><button id="gt-ms" aria-pressed="${mode==="split"}">${e(tr("按类型","By type"))}</button></div><button id="gt-pinned" class="gt-star-filter" aria-pressed="${!!st.u.pinnedOnly}">☆ ${e(tr("收藏","Favorites"))}</button></div>
 ${body}
-${hidden > 0 || (st.u.showAll && total > 10) ? v : ""}
-<div id="gt-status" class="gt-status ${e(st.u.statusType)}"></div>
-${aiIssueHtml}`;
+${filtered.length>shown.length ? `<div class="gt-view-all-wrap"><button id="gt-va" class="gt-view-all">${e(tr("加载更多","Load more"))} · ${shown.length} / ${filtered.length}</button></div>`:""}
+<div class="gt-history-tools"><button id="gt-export" class="gt-tool-btn">${e(t("ex"))}</button><button id="gt-import" class="gt-tool-btn">${e(t("im"))}</button>${st.c.webdav.enabled?`<button id="gt-sync" class="gt-tool-btn">${e(t("sn"))}</button>`:""}<button id="gt-ai" class="gt-tool-btn is-primary">${e(t("ai"))}</button><input id="gt-import-file" type="file" accept=".json,application/json" hidden></div>
+<div class="gt-ai-note" style="margin-top:12px">${e(tr("数据保存在本地 · Alt + Shift + H 打开 / 关闭","Stored locally · Alt + Shift + H to open / close"))}</div>`;
+    const q=sel=>st.u.body.querySelector(sel);
+    Object.assign(st.u,{statusNode:q("#gt-status"),syncBtn:q("#gt-sync"),importInput:q("#gt-import-file")});
+    q("#gt-type").value=type; q("#gt-period").value=period; q("#gt-sort").value=order;
+    paintStatus(); syncBtnState(st.u.syncing);
+    const updateSearch=ev=>{
+      if (ev.isComposing) return;
+      const value=ev.target.value, position=ev.target.selectionStart;
+      st.u.search=value; st.u.limit=30; renderHistory();
+      const input=q("#gt-search"); input.focus(); if (position!==null) input.setSelectionRange(position,position);
+    };
+    q("#gt-search").addEventListener("input",updateSearch);
+    q("#gt-search").addEventListener("compositionend",updateSearch);
+    q("#gt-search-clear").addEventListener("click",()=>{st.u.search="";st.u.limit=30;renderHistory();q("#gt-search").focus();});
+    for (const [id,key] of [["type","type"],["period","period"],["sort","order"]]) q(`#gt-${id}`).addEventListener("change",ev=>{st.u[key]=ev.target.value;st.u.limit=30;renderHistory();q(`#gt-${id}`).focus();});
+    q("#gt-pinned").addEventListener("click",()=>{st.u.pinnedOnly=!st.u.pinnedOnly;st.u.limit=30;renderHistory();q("#gt-pinned").focus();});
+    q("#gt-reset")?.addEventListener("click",()=>{Object.assign(st.u,{search:"",type:"all",period:"all",pinnedOnly:false,limit:30});renderHistory();q("#gt-search").focus();});
+    q("#gt-ms").addEventListener("click",()=>void setMode("split")); q("#gt-mm").addEventListener("click",()=>void setMode("merged"));
+    q("#gt-va")?.addEventListener("click",()=>{st.u.limit=limit+30;renderHistory();});
+    q("#gt-sync")?.addEventListener("click",()=>void syncNow());
+    q("#gt-export").addEventListener("click",exportHistory);
+    q("#gt-import").addEventListener("click",()=>st.u.importInput.click());
+    st.u.importInput.addEventListener("change",()=>void importHistory());
+    q("#gt-ai").addEventListener("click",openAnalysisView);
+    q("#gt-undo")?.addEventListener("click",()=>void editRecord("undo"));
+    st.u.body.querySelectorAll("[data-delete],[data-pin]").forEach(btn=>btn.addEventListener("click",()=>void editRecord(btn.hasAttribute("data-pin")?"pin":"delete",btn.dataset.type,btn.dataset.key)));
+  }
 
-    st.u.statusNode = st.u.body.querySelector("#gt-status");
-    st.u.syncBtn = st.u.body.querySelector("#gt-sync");
-    st.u.importInput = st.u.body.querySelector("#gt-import-file");
-    paintStatus();
-    syncBtnState(st.u.syncing);
-
-    st.u.body.querySelector("#gt-ms")?.addEventListener("click", () => void setMode("split"));
-    st.u.body.querySelector("#gt-mm")?.addEventListener("click", () => void setMode("merged"));
-    st.u.body.querySelector("#gt-va")?.addEventListener("click", () => {
-      st.u.showAll = !st.u.showAll;
-      renderHistory();
-    });
-    st.u.body.querySelector("#gt-sync")?.addEventListener("click", () => void syncNow());
-    st.u.body.querySelector("#gt-export")?.addEventListener("click", () => exportHistory());
-    st.u.body.querySelector("#gt-import")?.addEventListener("click", () => st.u.importInput?.click());
-    st.u.importInput?.addEventListener("change", () => void importHistory());
-    st.u.body.querySelector("#gt-ai")?.addEventListener("click", openAnalysisView);
+  async function editRecord(action, type, key) {
+    if (st.u.syncing) return status(tr("同步完成后再修改记录。","Wait for sync to finish before editing history."),"error");
+    let deleted=st.u.deleted;
+    try {
+      await mutateData(next => {
+        if (action==="undo" && deleted) {
+          if (!Object.hasOwn(next[deleted.type], deleted.record.key)) next[deleted.type][deleted.record.key]=deleted.record;
+          deleted=null;
+        } else if (next[type] && Object.hasOwn(next[type], key)) {
+          if (action==="pin") next[type][key].pinned=!next[type][key].pinned;
+          else {deleted={type,record:next[type][key]};delete next[type][key];}
+        }
+      });
+      st.u.deleted=deleted; renderHistory();
+      (st.u.body.querySelector(action==="delete"?"#gt-undo":"#gt-search"))?.focus();
+    } catch(err){status(err.message,"error");}
   }
 
   function renderSettings() {
-    st.u.body.innerHTML =
-`<div class="Box mb-3">
-  <div class="Box-header"><strong class="text-small">${e(t("lg"))}</strong></div>
-  <div class="Box-body">
-    <div class="text-small color-fg-muted mb-2">${e(t("ld"))}</div>
-    <select id="gt-lang" class="form-select"><option value="zh-CN">${e(t("lz"))}</option><option value="en">${e(t("le"))}</option></select>
-  </div>
-</div>
-<div class="Box mb-3">
-  <div class="Box-header"><strong class="text-small">${e(t("wd"))}</strong></div>
-  <div class="Box-body">
-    <label class="d-flex flex-items-center text-small mb-2"><input id="gt-we" type="checkbox" style="margin-right:6px;" />${e(t("we"))}</label>
-    <div class="gt-settings-grid">
-      <input id="gt-wu" class="form-control input-block" type="text" placeholder="${e(t("pb"))}" />
-      <input id="gt-wn" class="form-control input-block" type="text" placeholder="${e(t("pu"))}" />
-      <input id="gt-wp" class="form-control input-block" type="password" placeholder="${e(t("pp"))}" />
-    </div>
-  </div>
-</div>
-<div class="Box mb-3">
-  <div class="Box-header"><strong class="text-small">${e(t("ai_title"))}</strong></div>
-  <div class="Box-body">
-    <div class="gt-ai-note mb-2">${e(t("ai_default_note"))}</div>
-    <div class="gt-settings-grid">
-      <input id="gt-ai-url" class="form-control input-block" type="text" placeholder="https://api.openai.com/v1/chat/completions" />
-      <input id="gt-ai-key" class="form-control input-block" type="password" placeholder="sk-..." />
-      <input id="gt-ai-model" class="form-control input-block" type="text" placeholder="gpt-4o-mini" />
-      <label class="text-small color-fg-muted">${e(t("ai_temp"))}: <span id="gt-ai-temp-val">0.7</span></label>
-      <input id="gt-ai-temp" class="form-control input-block" type="range" min="0" max="2" step="0.1" value="0.7" />
-      <textarea id="gt-ai-style" class="form-control input-block" placeholder="${e(t("ai_style"))}"></textarea>
-      <textarea id="gt-ai-prompt" class="form-control input-block" placeholder="${e(t("ai_prompt"))}"></textarea>
-    </div>
-  </div>
-</div>
-<div class="gt-settings-actions"><button id="gt-save" type="button" class="Button Button--primary Button--small">${e(t("ss"))}</button></div>
-<div class="gt-settings-danger">
-  <div class="gt-danger-note">${e(t("cd"))}</div>
-  <button id="gt-clear-settings" type="button" class="gt-tool-btn is-danger">${e(t("ca"))}</button>
-</div>
-<div id="gt-status" class="gt-status ${e(st.u.statusType)}"></div>`;
-
-    st.u.statusNode = st.u.body.querySelector("#gt-status");
-    st.u.syncBtn = null;
-    st.u.langSel = st.u.body.querySelector("#gt-lang");
-    st.u.wEn = st.u.body.querySelector("#gt-we");
-    st.u.wUrl = st.u.body.querySelector("#gt-wu");
-    st.u.wUser = st.u.body.querySelector("#gt-wn");
-    st.u.wPass = st.u.body.querySelector("#gt-wp");
-    st.u.aiUrl = st.u.body.querySelector("#gt-ai-url");
-    st.u.aiKey = st.u.body.querySelector("#gt-ai-key");
-    st.u.aiModel = st.u.body.querySelector("#gt-ai-model");
-    st.u.aiTemp = st.u.body.querySelector("#gt-ai-temp");
-    st.u.aiTempVal = st.u.body.querySelector("#gt-ai-temp-val");
-    st.u.aiStyle = st.u.body.querySelector("#gt-ai-style");
-    st.u.aiPrompt = st.u.body.querySelector("#gt-ai-prompt");
-    fillSettings();
-    paintStatus();
-    st.u.aiTemp?.addEventListener("input", () => {
-      if (st.u.aiTempVal) st.u.aiTempVal.textContent = String(st.u.aiTemp.value || "0.7");
+    st.u.body.innerHTML=`<form id="gt-settings-form" novalidate>
+<div id="gt-status" role="status" aria-live="polite" class="gt-status"></div>
+<section class="Box gt-settings-section"><div class="Box-header"><strong>${e(tr("常用设置","General"))}</strong></div><div class="Box-body gt-settings-grid">
+<label for="gt-lang">${e(t("lg"))}<select id="gt-lang"><option value="zh-CN">简体中文</option><option value="en">English</option></select></label>
+<label for="gt-theme">${e(tr("外观","Appearance"))}<select id="gt-theme"><option value="auto">${e(tr("跟随 GitHub / 系统","Follow GitHub / system"))}</option><option value="light">${e(tr("浅色","Light"))}</option><option value="dark">${e(tr("深色","Dark"))}</option></select></label>
+<label class="gt-check"><input id="gt-paused" type="checkbox">${e(tr("暂停记录新的访问","Pause recording new visits"))}</label>
+<div class="gt-ai-note">${e(tr("自动记录仓库及其子页面、用户主页；每类最多保留 500 条。","Records repositories (including subpages) and profiles, up to 500 per type."))}</div>
+</div></section>
+<details class="Box gt-settings-section" ${st.c.webdav.enabled?"open":""}><summary>${e(t("wd"))} · ${e(tr("可选","Optional"))}</summary><div class="Box-body gt-settings-grid">
+<div class="gt-ai-note">${e(tr("手动合并远端记录，不会自动上传。请填写已有的 WebDAV 文件夹地址。删除只影响本地；再次同步可能恢复远端记录。","Manual merge only; no automatic uploads. Enter an existing WebDAV folder URL. Deletions are local and remote records may return on sync."))}</div>
+<label class="gt-check"><input id="gt-we" type="checkbox">${e(t("we"))}</label>
+<label for="gt-wu">${e(tr("WebDAV 地址（HTTPS）","WebDAV URL (HTTPS)"))}<input id="gt-wu" type="url" placeholder="${e(t("pb"))}"></label>
+<label for="gt-wn">${e(t("pu"))}<input id="gt-wn" autocomplete="off"></label>
+<label for="gt-wp">${e(t("pp"))}<input id="gt-wp" type="password" autocomplete="new-password"></label>
+</div></details>
+<details id="gt-ai-config" class="Box gt-settings-section"><summary>${e(t("ai_title"))} · ${e(tr("可选","Optional"))}</summary><div class="Box-body gt-settings-grid">
+<div class="gt-ai-note">${e(tr("支持 Chat Completions 兼容接口。只有主动分析或追问时才发送历史摘要和对话。","Supports Chat Completions compatible APIs. History summaries and conversation are sent only when you analyze or ask a follow-up."))}</div>
+<label for="gt-ai-url">${e(t("ai_url"))}<input id="gt-ai-url" type="url" placeholder="https://api.example.com/v1/chat/completions"></label>
+<label for="gt-ai-key">${e(t("ai_key"))}<input id="gt-ai-key" type="password" autocomplete="new-password" placeholder="sk-..."></label>
+<label for="gt-ai-model">${e(t("ai_model"))}<input id="gt-ai-model" placeholder="gpt-4o-mini"></label>
+<details><summary class="text-small">${e(tr("高级选项","Advanced options"))}</summary><div class="gt-settings-grid" style="margin-top:12px"><label for="gt-ai-temp">${e(t("ai_temp"))}: <span id="gt-ai-temp-val">0.7</span><input id="gt-ai-temp" type="range" min="0" max="2" step="0.1"></label><label for="gt-ai-style">${e(t("ai_style"))}<textarea id="gt-ai-style"></textarea></label><label for="gt-ai-prompt">${e(t("ai_prompt"))}<textarea id="gt-ai-prompt"></textarea></label></div></details>
+</div></details>
+<div class="gt-settings-actions"><button id="gt-save" type="submit" class="is-primary">${e(t("ss"))}</button></div>
+</form>
+<div class="gt-settings-danger"><div class="gt-danger-note">${e(t("cd"))}</div><button id="gt-clear-settings" type="button" class="gt-tool-btn is-danger" ${st.u.syncing?"disabled":""}>${e(t("ca"))}</button></div>`;
+    const q=sel=>st.u.body.querySelector(sel);
+    const fields={statusNode:"status",langSel:"lang",wEn:"we",wUrl:"wu",wUser:"wn",wPass:"wp",aiUrl:"ai-url",aiKey:"ai-key",aiModel:"ai-model",aiTemp:"ai-temp",aiTempVal:"ai-temp-val",aiStyle:"ai-style",aiPrompt:"ai-prompt"};
+    for (const [key,id] of Object.entries(fields)) st.u[key]=q(`#gt-${id}`);
+    st.u.syncBtn=null; fillSettings(); paintStatus();
+    q("#gt-theme").value=st.c.ui.theme || "auto"; q("#gt-paused").checked=!!st.c.recordingPaused;
+    st.u.aiTemp.addEventListener("input",()=>st.u.aiTempVal.textContent=st.u.aiTemp.value);
+    const form=q("#gt-settings-form");
+    for (const [id,value] of Object.entries(st.u.settingsDraft || {})) {
+      const field=form.querySelector(`#${id}`);
+      if (field) { if (field.type==="checkbox") field.checked=value; else field.value=value; }
+    }
+    st.u.aiTempVal.textContent=st.u.aiTemp.value;
+    form.addEventListener("input",()=>{
+      st.u.settingsDraft=Object.fromEntries([...form.querySelectorAll("input,select,textarea")].map(field=>[field.id,field.type==="checkbox"?field.checked:field.value]));
     });
-    st.u.body.querySelector("#gt-save")?.addEventListener("click", () => void saveSettings(false));
-    st.u.body.querySelector("#gt-clear-settings")?.addEventListener("click", () => void clearAll());
+    q("#gt-settings-form").addEventListener("submit",ev=>{ev.preventDefault();void saveSettings(false);});
+    q("#gt-clear-settings").addEventListener("click",()=>void clearAll().catch(err=>status(err.message,"error")));
   }
 
   function renderAbout() {
@@ -597,7 +506,7 @@ ${aiIssueHtml}`;
       <li>${e(t("al"))}</li>
       <li>${e(t("an"))}</li>
     </ul>
-    <div class="gt-about-version">Version: 1.1.0</div>
+    <div class="gt-about-version">Version: 1.2.0</div>
   </div>
 </div>`;
     st.u.statusNode = null;
@@ -621,7 +530,7 @@ ${aiIssueHtml}`;
         return `<div class="gt-ai-history-item">
           <div class="text-small">${title}</div>
           <div class="meta">${updated}</div>
-          <button type="button" class="gt-tool-btn" data-gt-ai-load="${sid}">${e(t("ai_load"))}</button>
+          <button type="button" class="gt-tool-btn" data-gt-ai-load="${sid}" ${st.u.aiLoading ? "disabled" : ""}>${e(t("ai_load"))}</button>
         </div>`;
       }).join("")
       : `<div class="text-small color-fg-muted">${e(t("ai_history_empty"))}</div>`;
@@ -635,18 +544,21 @@ ${aiIssueHtml}`;
 
     const followupDisabled = st.u.aiLoading || !hasSession ? "disabled" : "";
     st.u.body.innerHTML =
-`<details id="gt-ai-history" class="gt-ai-history"${detailsOpen}>
+`<div class="gt-ai-note">${e(tr("分析会将最近最多 80 个仓库和 80 位用户的访问摘要发送到你配置的 AI 服务。", "Analysis sends summaries of up to 80 recent repositories and 80 profiles to your configured AI service."))}</div>
+${st.u.aiError ? `<div role="alert" class="gt-ai-issue">${e(st.u.aiError)}</div>` : ""}
+<details id="gt-ai-history" class="gt-ai-history"${detailsOpen}>
   <summary>${e(t("ai_history"))}</summary>
   <div class="gt-ai-history-list">${historyHtml}</div>
 </details>
 <div class="gt-tool-row">
   <button id="gt-ai-run" type="button" class="gt-tool-btn is-primary" ${runDisabled}>${e(runLabel)}</button>
+  <button id="gt-ai-settings" type="button" class="gt-tool-btn">${e(tr("配置 AI 服务", "Configure AI"))}</button>
 </div>
 <div class="gt-ai-thread-viewport">
   ${bodyHtml}
 </div>
 <div class="gt-ai-followup">
-  <label class="text-small color-fg-muted">${e(t("ai_followup"))}</label>
+  <label for="gt-ai-followup" class="text-small color-fg-muted">${e(t("ai_followup"))} · Ctrl / ⌘ + Enter</label>
   <textarea id="gt-ai-followup" class="form-control input-block" placeholder="${e(t("ai_followup_ph"))}" ${followupDisabled}></textarea>
   <div><button id="gt-ai-send" type="button" class="gt-tool-btn" ${followupDisabled}>${e(t("ai_send"))}</button></div>
 </div>
@@ -654,11 +566,17 @@ ${aiIssueHtml}`;
     st.u.statusNode = st.u.body.querySelector("#gt-status");
     st.u.syncBtn = null;
     st.u.aiFollowupInput = st.u.body.querySelector("#gt-ai-followup");
+    st.u.aiFollowupInput.value = st.u.aiDraft || "";
+    st.u.aiFollowupInput.addEventListener("input", () => { st.u.aiDraft = st.u.aiFollowupInput.value; });
+    st.u.body.querySelector("#gt-ai-settings").addEventListener("click", () => {
+      switchView("settings");
+      requestAnimationFrame(() => { const detail=st.u.body.querySelector("#gt-ai-config"); if (detail) {detail.open=true; detail.scrollIntoView({block:"start"}); st.u.aiUrl?.focus();} });
+    });
     paintStatus();
     st.u.body.querySelector("#gt-ai-run")?.addEventListener("click", () => void runAiAnalysisInitial());
     st.u.body.querySelector("#gt-ai-send")?.addEventListener("click", () => void runAiFollowup());
     st.u.aiFollowupInput?.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
+      if (!ev.isComposing && ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
         ev.preventDefault();
         void runAiFollowup();
       }
@@ -691,56 +609,36 @@ ${aiIssueHtml}`;
   }
 
   function rows(list, mode) {
-    if (!list.length) {
-      if (mode === "repo") return `<div class="gt-list-empty">${e(t("nr"))}</div>`;
-      if (mode === "user") return `<div class="gt-list-empty">${e(t("nu"))}</div>`;
-      return `<div class="gt-list-empty">${e(t("nh"))}</div>`;
-    }
-
-    return list.map((it) => {
-      const isRepo = it.__t === "repo";
-      const name = isRepo ? `${it.owner}/${it.repo}` : it.username;
-      const badge = mode === "merged" ? `<span class="Label Label--secondary">${e(isRepo ? t("tr") : t("tu"))}</span>` : "";
-      return `<a class="Box-row d-block no-underline" href="${e(it.url)}"><div class="d-flex flex-items-center flex-justify-between"><div class="Link--primary text-bold">${e(name)}</div>${badge}</div><div class="gt-meta"><span>${e(fmt(it.lastVisitedAt))}</span><span>x${Number(it.visitCount || 0)}</span></div></a>`;
+    return list.map(it=>{
+      const name=it.__t==="repo" ? `${it.owner}/${it.repo}` : it.username;
+      const ago=Math.max(0,Date.now()-ts(it.lastVisitedAt)), days=Math.floor(ago/86400000);
+      const relative=!ts(it.lastVisitedAt)?t("ut"):ago<60000?tr("刚刚","Just now"):ago<3600000?tr(`${Math.floor(ago/60000)} 分钟前`,`${Math.floor(ago/60000)}m ago`):ago<86400000?tr(`${Math.floor(ago/3600000)} 小时前`,`${Math.floor(ago/3600000)}h ago`):tr(`${days} 天前`,`${days}d ago`);
+      return `<article class="gt-record"><a class="gt-record-link" href="${e(it.url)}"><span class="gt-record-icon" aria-hidden="true">${it.__t==="repo"?SVG.g:SVG.i}</span><span class="gt-record-info"><span class="gt-record-name">${e(name)}</span><span class="gt-meta"><time datetime="${e(it.lastVisitedAt)}" title="${e(fmt(it.lastVisitedAt))}">${e(relative)}</time><span>· ${it.visitCount} ${e(tr("次访问","visits"))}</span>${mode==="merged"?`<span class="Label">${e(t(it.__t==="repo"?"tr":"tu"))}</span>`:""}</span></span></a><div class="gt-record-actions"><button data-pin data-type="${it.__t}" data-key="${e(it.key)}" aria-pressed="${!!it.pinned}" aria-label="${e(tr(it.pinned?"取消收藏":"收藏",it.pinned?"Unfavorite":"Favorite")+" "+name)}" title="${e(tr("收藏","Favorite"))}" ${st.u.syncing?"disabled":""}>${it.pinned?"★":"☆"}</button><button data-delete data-type="${it.__t}" data-key="${e(it.key)}" aria-label="${e(tr("删除","Delete")+" "+name)}" title="${e(tr("删除","Delete"))}" ${st.u.syncing?"disabled":""}>×</button></div></article>`;
     }).join("");
   }
 
   async function setMode(mode) {
-    if (mode !== "split" && mode !== "merged") return;
-    st.c.ui.listMode = mode;
-    st.u.showAll = false;
-    await setV(CFG_KEY, st.c);
-    renderHistory();
+    if (mode!=="split" && mode!=="merged") return;
+    const next=structuredClone(st.c); next.ui.listMode=mode;
+    try {await setV(CFG_KEY,next);st.c=next;st.u.limit=30;renderHistory();st.u.body.querySelector(mode==="split"?"#gt-ms":"#gt-mm")?.focus();}
+    catch(err){status(err.message,"error");}
   }
 
   async function saveSettings(silent) {
     if (!st.u.langSel) return;
-    const nextLang = st.u.langSel.value === "en" ? "en" : "zh-CN";
-    st.c.language = nextLang;
-    st.c.webdav.enabled = !!st.u.wEn.checked;
-    st.c.webdav.baseUrl = String(st.u.wUrl.value || "").trim();
-    st.c.webdav.username = String(st.u.wUser.value || "").trim();
-    st.c.webdav.password = String(st.u.wPass.value || "");
-    st.c.webdav.fileName = FILE;
-
-    const nextAiUrl = String(st.u.aiUrl?.value || "").trim();
-    if (nextAiUrl && !isValidAiApiUrl(nextAiUrl)) {
-      setAiIssue(t("ai_url_invalid"));
-      status(t("ai_url_invalid"), "error", 2200);
-      return;
-    }
-    st.c.ai.apiUrl = nextAiUrl;
-    st.c.ai.apiKey = String(st.u.aiKey?.value || "");
-    st.c.ai.model = String(st.u.aiModel?.value || "").trim() || "gpt-4o-mini";
-    st.c.ai.temperature = clampTemp(st.u.aiTemp?.value);
-    const nextStyle = String(st.u.aiStyle?.value || "").trim();
-    const nextPrompt = String(st.u.aiPrompt?.value || "").trim();
-    st.c.ai.style = nextStyle || defaultAiStyle(nextLang);
-    st.c.ai.prompt = nextPrompt || defaultAiPrompt(nextLang);
-    await setV(CFG_KEY, st.c);
-    clearAiIssue();
-    renderSidebar();
-    if (!silent) status(t("sv"), "info", 1800);
+    const next=structuredClone(st.c);
+    next.language=st.u.langSel.value==="en"?"en":"zh-CN";
+    next.ui.theme=st.u.body.querySelector("#gt-theme").value;
+    next.recordingPaused=st.u.body.querySelector("#gt-paused").checked;
+    next.webdav={enabled:st.u.wEn.checked,baseUrl:st.u.wUrl.value.trim(),username:st.u.wUser.value.trim(),password:st.u.wPass.value,fileName:FILE};
+    next.ai={apiUrl:st.u.aiUrl.value.trim(),apiKey:st.u.aiKey.value.trim(),model:st.u.aiModel.value.trim() || "gpt-4o-mini",temperature:clampTemp(st.u.aiTemp.value),style:st.u.aiStyle.value.trim() || defaultAiStyle(next.language),prompt:st.u.aiPrompt.value.trim() || defaultAiPrompt(next.language)};
+    try {
+      if (next.webdav.enabled) buildUrl(next.webdav.baseUrl,FILE);
+      if (next.ai.apiUrl && !isValidAiApiUrl(next.ai.apiUrl)) throw new Error(t("ai_url_invalid"));
+      await setV(CFG_KEY,next);
+      st.c=next; st.u.settingsDraft=null; clearAiIssue(); applyTheme(); ensureTopbar(); renderSidebar();
+      if (!silent) status(t("sv"),"info",3000);
+    } catch(err) {status(err.message,"error");st.u.body.scrollTop=0;}
   }
 
   function exportHistory() {
@@ -754,7 +652,7 @@ ${aiIssueHtml}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
 
   async function importHistory() {
@@ -767,14 +665,10 @@ ${aiIssueHtml}`;
       }
       const text = await file.text();
       const parsed = JSON.parse(text);
-      if (!parsed || typeof parsed !== "object") {
-        throw new Error(t("iu"));
-      }
-      const imported = normData(parsed);
+      const imported = validateHistory(parsed);
       const count = Object.keys(imported.repo || {}).length + Object.keys(imported.user || {}).length;
-      st.d = merge(st.d, imported);
-      await setV(DATA_KEY, st.d);
-      renderHistory();
+      await mutateData(latest => merge(latest, imported));
+      if (st.u.view === "history") renderHistory();
       status(t("io", { count }), "info", 2200);
     } catch (err) {
       status(t("if", { msg: err.message }), "error");
@@ -790,6 +684,11 @@ ${aiIssueHtml}`;
 
   async function runAiAnalysisInitial() {
     if (st.u.aiLoading) return;
+    if (!Object.keys(st.d.repo).length && !Object.keys(st.d.user).length) {
+      st.u.aiError = aiText("先浏览一些仓库或用户主页，再开始分析。", "Visit a repository or profile before starting an analysis.");
+      if (st.u.view === "analysis") renderAnalysis();
+      return;
+    }
     st.u.aiLoading = true;
     st.u.aiError = "";
     if (st.u.view === "analysis") renderAnalysis();
@@ -804,10 +703,10 @@ ${aiIssueHtml}`;
         updatedAt: now,
         messages: [...messages, { role: "assistant", content: result }],
       };
-      appendAiSession(session);
+      await appendAiSession(session);
       st.u.activeAiSessionId = session.id;
       st.u.aiResult = result;
-      st.u.aiError = "";
+      st.u.aiDraft = "";
     } catch (err) {
       st.u.aiError = err.message || "AI request failed.";
       st.u.aiResult = "";
@@ -822,6 +721,7 @@ ${aiIssueHtml}`;
     const inputNode = st.u.aiFollowupInput;
     const question = String((inputNode && inputNode.value) || "").trim();
     if (!question) return;
+    st.u.aiDraft = question;
     const session = getActiveAiSession();
     if (!session) {
       status(t("ai_need_initial"), "error", 1800);
@@ -831,7 +731,6 @@ ${aiIssueHtml}`;
     st.u.aiLoading = true;
     st.u.aiError = "";
     if (st.u.view === "analysis") renderAnalysis();
-    let shouldRestoreInput = false;
     try {
       const messages = session.messages.map((x) => ({ role: x.role, content: x.content }));
       messages.push({ role: "user", content: question });
@@ -843,17 +742,16 @@ ${aiIssueHtml}`;
       touchAiSession(session.id);
       await saveAiHistory();
       st.u.aiResult = answer;
-      st.u.aiError = "";
+      st.u.aiDraft = "";
       if (inputNode) inputNode.value = "";
     } catch (err) {
-      shouldRestoreInput = true;
       st.u.aiError = err.message || "AI request failed.";
     } finally {
       st.u.aiLoading = false;
       if (st.u.view === "analysis") {
         renderAnalysis();
-        if (shouldRestoreInput && st.u.aiFollowupInput) {
-          st.u.aiFollowupInput.value = question;
+        if (st.u.aiFollowupInput) {
+          st.u.aiFollowupInput.value = st.u.aiDraft || "";
         }
       }
     }
@@ -861,7 +759,7 @@ ${aiIssueHtml}`;
 
   async function requestAiChat(messages) {
     const apiUrl = String(st.c.ai.apiUrl || "").trim();
-    const apiKey = String(st.c.ai.apiKey || "");
+    const apiKey = String(st.c.ai.apiKey || "").trim();
     if (apiUrl && !isValidAiApiUrl(apiUrl)) {
       setAiIssue(t("ai_url_invalid"));
       throw new Error(t("ai_url_invalid"));
@@ -871,15 +769,7 @@ ${aiIssueHtml}`;
       throw new Error(t("ae"));
     }
 
-    const safeMessages = Array.isArray(messages)
-      ? messages
-        .map((m) => ({
-          role: m && typeof m.role === "string" ? m.role : "",
-          content: m && typeof m.content === "string" ? m.content : "",
-        }))
-        .filter((m) => (m.role === "system" || m.role === "user" || m.role === "assistant") && m.content.trim())
-        .slice(-40)
-      : [];
+    const safeMessages = limitAiMessages(messages, 40);
     if (!safeMessages.length) {
       setAiIssue(t("ai_parse_fail"));
       throw new Error(t("ai_parse_fail"));
@@ -901,6 +791,7 @@ ${aiIssueHtml}`;
           Authorization: `Bearer ${apiKey}`,
         },
         data: JSON.stringify(body),
+        timeout: 90000,
       });
     } catch (err) {
       const msg = err && err.message ? String(err.message) : t("en");
@@ -918,15 +809,32 @@ ${aiIssueHtml}`;
 
     try {
       const parsed = JSON.parse(res.responseText || "{}");
-      const content = parsed?.choices?.[0]?.message?.content;
-      if (!content) throw new Error(t("ai_parse_fail"));
+      const rawContent = parsed?.choices?.[0]?.message?.content;
+      const content = typeof rawContent === "string" ? rawContent : Array.isArray(rawContent)
+        ? rawContent.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n")
+        : "";
+      if (!content.trim()) throw new Error(t("ai_parse_fail"));
       clearAiIssue();
-      return String(content);
+      return content.trim();
     } catch (err) {
-      const msg = err && err.message ? String(err.message) : t("ai_parse_fail");
+      const msg = t("ai_parse_fail");
       setAiIssue(msg);
       throw new Error(msg);
     }
+  }
+
+  function aiText(chinese, english) {
+    return st.c.language === "en" ? english : chinese;
+  }
+
+  function limitAiMessages(raw, limit) {
+    const messages = (Array.isArray(raw) ? raw : [])
+      .filter((m) => m && ["system", "user", "assistant"].includes(m.role) && typeof m.content === "string" && m.content.trim())
+      .map((m) => ({ role: m.role, content: m.content }));
+    if (messages.length <= limit) return messages;
+    // Preserve the instructions and original activity snapshot across long conversations.
+    const contextLength = messages[0]?.role === "system" && messages[1]?.role === "user" ? 2 : 1;
+    return [...messages.slice(0, contextLength), ...messages.slice(-(limit - contextLength))];
   }
 
   function buildInitialAiMessages() {
@@ -950,13 +858,16 @@ ${aiIssueHtml}`;
     if (!list.length) {
       return `<div class="gt-ai-box text-small color-fg-muted">${e(t("ai_empty"))}</div>`;
     }
-    const items = list.map((msg) => {
+    const items = list.map((msg, index) => {
       const role = String(msg.role || "");
       const isUser = role === "user";
       const roleLabel = isUser ? t("ai_you") : t("ai_assistant");
-      const content = isUser
+      let content = isUser
         ? `<p>${e(String(msg.content || "")).replace(/\n/g, "<br>")}</p>`
         : renderMarkdownSafe(msg.content);
+      if (isUser && index === 0 && msg.content.includes("[Repository History]")) {
+        content = `<details class="gt-ai-context"><summary>${e(aiText("本次分析使用的浏览记录", "Activity shared for this analysis"))}</summary>${content}</details>`;
+      }
       return `<div class="gt-chat-msg ${isUser ? "is-user" : ""}">
         <div class="gt-chat-role">${e(roleLabel)}</div>
         <div class="gt-chat-content">${content}</div>
@@ -968,13 +879,17 @@ ${aiIssueHtml}`;
   function renderMarkdownSafe(input) {
     const source = String(input || "").replace(/\r\n?/g, "\n");
     const escaped = e(source);
+    let codePrefix = "@@GT_CODE_";
+    while (source.includes(codePrefix)) codePrefix = `_${codePrefix}`;
+    const codePattern = new RegExp(`${codePrefix}(\\d+)@@`, "g");
+    const codeLinePattern = new RegExp(`^${codePrefix}\\d+@@$`);
     const codeBlocks = [];
     const withCodeToken = escaped.replace(/```([^\n`]*)\n([\s\S]*?)```/g, (_, lang, code) => {
       const idx = codeBlocks.length;
       const langClass = sanitizeLang(lang);
       const cls = langClass ? ` class="language-${langClass}"` : "";
       codeBlocks.push(`<pre><code${cls}>${code}</code></pre>`);
-      return `@@GT_CODE_${idx}@@`;
+      return `${codePrefix}${idx}@@`;
     });
 
     const lines = withCodeToken.split("\n");
@@ -1008,7 +923,7 @@ ${aiIssueHtml}`;
         closeLists();
         continue;
       }
-      if (/^@@GT_CODE_\d+@@$/.test(trimLine)) {
+      if (codeLinePattern.test(trimLine)) {
         closeP();
         closeLists();
         html += trimLine;
@@ -1066,26 +981,30 @@ ${aiIssueHtml}`;
     closeP();
     closeLists();
 
-    const merged = html.replace(/@@GT_CODE_(\d+)@@/g, (_, idx) => codeBlocks[Number(idx)] || "");
+    const merged = html.replace(codePattern, (_, idx) => codeBlocks[Number(idx)] || "");
     return sanitizeHtml(merged || `<p>${e(t("ai_empty"))}</p>`);
   }
 
   function renderInlineMarkdown(text) {
     const safeText = String(text || "");
-    const inlineCodes = [];
+    let prefix = "@@GT_INLINE_";
+    while (safeText.includes(prefix)) prefix = `_${prefix}`;
+    const fragments = [];
+    const protect = (html) => {
+      const index = fragments.push(html) - 1;
+      return `${prefix}${index}@@`;
+    };
     let out = safeText.replace(/`([^`]+)`/g, (_, code) => {
-      const idx = inlineCodes.length;
-      inlineCodes.push(`<code>${code}</code>`);
-      return `@@GT_INLINE_${idx}@@`;
+      return protect(`<code>${code}</code>`);
     });
     out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, hrefRaw) => {
       const href = normalizeSafeHref(hrefRaw);
       if (!href) return label;
-      return `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer nofollow">${label}</a>`;
+      return `${protect(`<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer nofollow">`)}${label}${protect("</a>")}`;
     });
     out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     out = out.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-    out = out.replace(/@@GT_INLINE_(\d+)@@/g, (_, idx) => inlineCodes[Number(idx)] || "");
+    out = out.replace(new RegExp(`${prefix}(\\d+)@@`, "g"), (_, idx) => fragments[Number(idx)] || "");
     return out;
   }
 
@@ -1174,9 +1093,15 @@ ${aiIssueHtml}`;
     const out = defAiHistory();
     if (!raw || typeof raw !== "object") return out;
     const list = Array.isArray(raw.sessions) ? raw.sessions : [];
+    const seen = new Set();
     out.sessions = list.map((item, index) => normalizeAiSession(item, index))
       .filter(Boolean)
       .sort((a, b) => ts(b.updatedAt) - ts(a.updatedAt))
+      .filter((session) => {
+        if (seen.has(session.id)) return false;
+        seen.add(session.id);
+        return true;
+      })
       .slice(0, AI_HISTORY_MAX_SESSIONS);
     return out;
   }
@@ -1186,28 +1111,25 @@ ${aiIssueHtml}`;
     const now = new Date().toISOString();
     const id = String(raw.id || makeSessionId(index));
     const messagesRaw = Array.isArray(raw.messages) ? raw.messages : [];
-    const messages = messagesRaw
-      .map((m) => ({
-        role: m && typeof m.role === "string" ? m.role : "",
-        content: m && typeof m.content === "string" ? m.content : "",
-      }))
-      .filter((m) => (m.role === "system" || m.role === "user" || m.role === "assistant") && m.content.trim())
-      .slice(0, 200);
+    const messages = limitAiMessages(messagesRaw, 200);
     if (!messages.length) return null;
     return {
       id,
-      title: String(raw.title || "").trim(),
-      createdAt: typeof raw.createdAt === "string" ? raw.createdAt : now,
-      updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : now,
+      title: String(raw.title || "").trim().slice(0, 160),
+      createdAt: ts(raw.createdAt) ? new Date(raw.createdAt).toISOString() : now,
+      updatedAt: ts(raw.updatedAt) ? new Date(raw.updatedAt).toISOString() : now,
       messages,
     };
   }
 
   async function saveAiHistory() {
     try {
+      st.ah = normalizeAiHistory(st.ah);
       await setV(AI_HISTORY_KEY, st.ah);
+      return true;
     } catch (_error) {
-      // no-op
+      st.u.aiError = aiText("分析结果仍在当前页面，但保存失败。请检查浏览器存储空间后重试。", "The result is available on this page, but could not be saved. Check browser storage and try again.");
+      return false;
     }
   }
 
@@ -1229,13 +1151,13 @@ ${aiIssueHtml}`;
     return st.ah.sessions[0];
   }
 
-  function appendAiSession(session) {
+  async function appendAiSession(session) {
     const normalized = normalizeAiSession(session, 0);
     if (!normalized) return;
     const next = st.ah.sessions.filter((x) => x.id !== normalized.id);
     next.unshift(normalized);
     st.ah.sessions = next.slice(0, AI_HISTORY_MAX_SESSIONS);
-    void saveAiHistory();
+    return await saveAiHistory();
   }
 
   function touchAiSession(sessionId) {
@@ -1247,11 +1169,13 @@ ${aiIssueHtml}`;
   }
 
   function loadAiSession(sessionId) {
+    if (st.u.aiLoading) return false;
     const found = st.ah.sessions.find((x) => x.id === sessionId);
     if (!found) return false;
     st.u.activeAiSessionId = found.id;
     st.u.aiResult = "";
     st.u.aiError = "";
+    st.u.aiDraft = "";
     if (st.u.view === "analysis") {
       renderAnalysis();
     } else {
@@ -1261,9 +1185,10 @@ ${aiIssueHtml}`;
   }
 
   async function clearAll() {
+    if (st.u.syncing) return status(t("sy"), "info");
     if (!window.confirm(t("cc"))) return;
-    st.d = defData();
-    await setV(DATA_KEY, st.d);
+    await mutateData(() => defData());
+    st.u.deleted = null;
     status(t("cl"), "info", 1800);
     if (st.u.view === "settings") renderSettings();
     else if (st.u.view === "history") renderHistory();
@@ -1312,6 +1237,7 @@ ${aiIssueHtml}`;
   }
 
   function syncBtnState(syncing) {
+    st.u.body?.querySelectorAll("[data-delete],[data-pin],#gt-undo,#gt-clear-settings").forEach(button => { button.disabled=syncing; });
     if (!st.u.syncBtn) return;
     st.u.syncBtn.disabled = syncing;
     st.u.syncBtn.textContent = syncing ? t("sy") : t("sn");
@@ -1326,9 +1252,8 @@ ${aiIssueHtml}`;
       st.u.syncing = true;
       syncBtnState(true);
       status(t("sy"), "info");
-      const merged = await syncWebDav(st.d, st.c.webdav);
-      st.d = merged;
-      await setV(DATA_KEY, st.d);
+      const merged = await syncWebDav(async () => normData(await getV(DATA_KEY, defData())), { ...st.c.webdav });
+      await mutateData(latest => merge(latest, merged));
       if (st.u.view === "history") renderHistory();
       status(t("ok", { time: fmt(new Date().toISOString()) }), "info", 2200);
     } catch (err) {
@@ -1340,52 +1265,46 @@ ${aiIssueHtml}`;
   }
 
   async function record() {
-    const r = parseRoute(window.location.pathname);
+    const pathname = normPath(window.location.pathname);
+    // Turbo may render the same URL several times, well after a short debounce.
+    if (st.last.p === pathname) return;
+    st.last.p = pathname;
+    st.last.t = Date.now();
+    if (st.c.recordingPaused) return;
+    const r = parseRoute(pathname);
     if (!r) return;
-    const now = Date.now();
-    if (st.last.p === r.pathname && now - st.last.t < 1200) return;
-    st.last.p = r.pathname;
-    st.last.t = now;
-    const iso = new Date(now).toISOString();
-
-    if (r.type === "repo") {
-      const old = st.d.repo[r.key];
-      st.d.repo[r.key] = {
-        key: r.key, owner: r.owner, repo: r.repo, url: r.url, lastVisitedAt: iso,
-        visitCount: old ? Number(old.visitCount || 0) + 1 : 1
-      };
-      prune(st.d.repo, maxItems());
-    } else {
-      const old = st.d.user[r.key];
-      st.d.user[r.key] = {
-        key: r.key, username: r.username, url: r.url, lastVisitedAt: iso,
-        visitCount: old ? Number(old.visitCount || 0) + 1 : 1
-      };
-      prune(st.d.user, maxItems());
+    const iso = new Date().toISOString();
+    try {
+      await mutateData(latest => {
+        const map = latest[r.type];
+        const old = Object.hasOwn(map, r.key) ? map[r.key] : undefined;
+        map[r.key] = {
+          ...(old || {}), key: r.key, url: r.url, lastVisitedAt: iso,
+          visitCount: Math.min(Number.MAX_SAFE_INTEGER, (old ? old.visitCount : 0) + 1),
+          ...(r.type === "repo" ? { owner: r.owner, repo: r.repo } : { username: r.username })
+        };
+        prune(map, maxItems());
+      });
+    } catch (error) {
+      if (st.last.p === pathname) st.last.p = "";
+      throw error;
     }
-    st.d.meta.updatedAt = iso;
-    await setV(DATA_KEY, st.d);
   }
 
   function parseRoute(raw) {
     if (window.location.hostname !== "github.com") return null;
     const p = normPath(raw);
-    if (p === "/" || excluded(p)) return null;
-    const s = p.split("/").filter(Boolean);
-
-    if (s.length === 1) {
-      const u = s[0];
-      if (!safeSeg(u) || RESERVED.has(u.toLowerCase())) return null;
-      return { type: "user", key: u.toLowerCase(), username: u, url: `https://github.com/${u}`, pathname: p };
+    if (p === "/" || excluded(p.toLowerCase())) return null;
+    const parts = p.split("/").filter(Boolean);
+    const owner = parts[0];
+    if (!safeOwner(owner) || RESERVED.has(owner.toLowerCase())) return null;
+    if (parts.length === 1) {
+      return { type: "user", key: owner.toLowerCase(), username: owner, url: `https://github.com/${owner}`, pathname: p };
     }
-
-    if (s.length === 2) {
-      const o = s[0], r = s[1];
-      if (!safeSeg(o) || !safeSeg(r) || RESERVED.has(o.toLowerCase())) return null;
-      return { type: "repo", key: `${o.toLowerCase()}/${r.toLowerCase()}`, owner: o, repo: r, url: `https://github.com/${o}/${r}`, pathname: p };
-    }
-
-    return null;
+    const repo = parts[1];
+    if (!safeSeg(repo)) return null;
+    return { type: "repo", key: `${owner.toLowerCase()}/${repo.toLowerCase()}`, owner, repo,
+      url: `https://github.com/${owner}/${repo}`, pathname: p };
   }
 
   function excluded(p) {
@@ -1393,11 +1312,15 @@ ${aiIssueHtml}`;
   }
 
   function safeSeg(s) {
-    return /^[A-Za-z0-9._-]+$/.test(s);
+    return typeof s === "string" && /^[A-Za-z0-9._-]+$/.test(s) && s !== "." && s !== "..";
+  }
+
+  function safeOwner(s) {
+    return typeof s === "string" && /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(s) && safeSeg(s);
   }
 
   function normPath(p) {
-    const n = p.replace(/\/{2,}/g, "/");
+    const n = String(p || "/").replace(/\/{2,}/g, "/");
     return n.length > 1 && n.endsWith("/") ? n.slice(0, -1) : n;
   }
 
@@ -1405,27 +1328,28 @@ ${aiIssueHtml}`;
     const url = buildUrl(cfg.baseUrl, cfg.fileName);
     const headers = { Accept: "application/json" };
     if (cfg.username) headers.Authorization = `Basic ${b64(`${cfg.username}:${cfg.password || ""}`)}`;
-
     let remote = defData();
-    const g = await req({ method: "GET", url, headers });
-    if (g.status >= 200 && g.status < 300) {
-      const txt = g.responseText || "";
-      if (txt.trim()) {
-        try { remote = normData(JSON.parse(txt)); }
-        catch (_e) { throw new Error(t("ej")); }
-      }
-    } else if (g.status !== 404) {
-      throw new Error(t("eg", { code: String(g.status) }));
+    const response = await req({ method: "GET", url, headers });
+    if (response.status >= 200 && response.status < 300) {
+      const text = response.responseText || "";
+      if (new Blob([text]).size > IMPORT_MAX_BYTES) throw new Error(t("il", { size: formatBytes(IMPORT_MAX_BYTES) }));
+      if (!text.trim()) throw new Error(t("ej"));
+      let parsed;
+      try { parsed = JSON.parse(text); } catch (_error) { throw new Error(t("ej")); }
+      remote = validateHistory(parsed);
+    } else if (response.status !== 404) {
+      throw new Error(t("eg", { code: String(response.status) }));
     }
-
-    const merged = merge(local, remote);
-    const p = await req({
-      method: "PUT",
-      url,
-      headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+    // Read current local records after GET so navigation during the request is retained.
+    const merged = merge(typeof local === "function" ? await local() : local, remote);
+    const etag = String(response.responseHeaders || "").match(/^etag:\s*(.+)$/im)?.[1]?.trim();
+    const condition = response.status === 404 ? { "If-None-Match": "*" } : etag && !etag.startsWith("W/") ? { "If-Match": etag } : {};
+    const result = await req({ method: "PUT", url,
+      headers: { ...headers, ...condition, "Content-Type": "application/json; charset=utf-8" },
       data: JSON.stringify(merged, null, 2)
     });
-    if (p.status < 200 || p.status >= 300) throw new Error(t("ep", { code: String(p.status) }));
+    if (result.status === 409 || result.status === 412) throw new Error(st.c.language === "en" ? "Remote data changed. Sync again to merge the latest records." : "远端记录已被其他设备更新，请重新同步以合并最新记录。");
+    if (result.status < 200 || result.status >= 300) throw new Error(t("ep", { code: String(result.status) }));
     return merged;
   }
 
@@ -1440,24 +1364,33 @@ ${aiIssueHtml}`;
   }
 
   function mergeMap(x, y) {
-    const out = {}, ks = new Set([...Object.keys(x || {}), ...Object.keys(y || {})]);
-    for (const k of ks) {
-      const a = x ? x[k] : undefined, b = y ? y[k] : undefined;
-      if (a && !b) { out[k] = cleanRec(a, k); continue; }
-      if (b && !a) { out[k] = cleanRec(b, k); continue; }
-      const win = ts(a.lastVisitedAt) >= ts(b.lastVisitedAt) ? a : b;
-      out[k] = { ...cleanRec(win, k), visitCount: Math.max(Number(a.visitCount || 0), Number(b.visitCount || 0), 1) };
+    const out = {}, keys = new Set([...Object.keys(x || {}), ...Object.keys(y || {})]);
+    for (const key of keys) {
+      const a = Object.hasOwn(x || {}, key) ? cleanRec(x[key], key) : null;
+      const b = Object.hasOwn(y || {}, key) ? cleanRec(y[key], key) : null;
+      if (!a && !b) continue;
+      const win = !b || (a && ts(a.lastVisitedAt) >= ts(b.lastVisitedAt)) ? a : b;
+      out[win.key] = { ...win, visitCount: Math.max(a?.visitCount || 1, b?.visitCount || 1) };
     }
     return out;
   }
 
-  function cleanRec(r, k) {
+  function cleanRec(r, k, type) {
+    if (!r || typeof r !== "object" || Array.isArray(r)) return null;
+    const parts = String(k || "").split("/");
+    type = type || (parts.length === 2 ? "repo" : "user");
+    const owner = String(type === "repo" ? (r.owner || parts[0] || "") : (r.username || parts[0] || ""));
+    const repo = String(r.repo || parts[1] || "");
+    if (!safeOwner(owner) || RESERVED.has(owner.toLowerCase()) || (type === "repo" && !safeSeg(repo))) return null;
+    const key = type === "repo" ? `${owner.toLowerCase()}/${repo.toLowerCase()}` : owner.toLowerCase();
+    const count = Number(r.visitCount);
+    const date = ts(r.lastVisitedAt);
     return {
-      ...r,
-      key: r.key || k,
-      url: r.url || "",
-      lastVisitedAt: r.lastVisitedAt || new Date().toISOString(),
-      visitCount: Math.max(Number(r.visitCount || 0), 1)
+      key, ...(type === "repo" ? { owner, repo } : { username: owner }),
+      url: `https://github.com/${owner}${type === "repo" ? `/${repo}` : ""}`,
+      lastVisitedAt: date > 0 ? new Date(date).toISOString() : "",
+      visitCount: Number.isFinite(count) ? Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(count))) : 1,
+      pinned: r.pinned === true
     };
   }
 
@@ -1486,11 +1419,13 @@ ${aiIssueHtml}`;
   }
 
   function buildUrl(baseRaw, fileRaw) {
-    const file = (fileRaw || FILE).trim();
-    const base = String(baseRaw || "").trim();
-    if (!base) return file;
-    if (base.endsWith(file)) return base;
-    return base.endsWith("/") ? `${base}${file}` : `${base}/${file}`;
+    const file = String(fileRaw || FILE).trim();
+    const base = new URL(String(baseRaw || "").trim());
+    if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash || !safeSeg(file)) {
+      throw new Error(st.c.language === "en" ? "Use an HTTPS WebDAV URL without credentials, query, or fragment." : "请使用 HTTPS WebDAV 地址，且不要在地址中包含账号、查询参数或片段。");
+    }
+    if (base.pathname.split("/").pop() !== file) base.pathname = `${base.pathname.replace(/\/$/, "")}/${file}`;
+    return base.href;
   }
 
   function b64(s) {
@@ -1500,32 +1435,78 @@ ${aiIssueHtml}`;
   function req(o) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
-        method: o.method,
-        url: o.url,
-        headers: o.headers || {},
-        data: o.data,
-        onload: (r) => resolve(r),
+        method: o.method, url: o.url, headers: o.headers || {}, data: o.data,
+        timeout: o.timeout || 60000, anonymous: true,
+        onload: (r) => {
+          if (r.finalUrl && new URL(r.finalUrl).origin !== new URL(o.url).origin) {
+            reject(new Error(st.c.language === "en" ? "Cross-origin redirect rejected." : "请求被重定向到其他站点，请填写最终服务地址。"));
+          } else resolve(r);
+        },
         onerror: () => reject(new Error(t("en"))),
-        ontimeout: () => reject(new Error(t("et")))
+        ontimeout: () => reject(new Error(t("et"))),
+        onabort: () => reject(new Error(t("en")))
       });
+    });
+  }
+
+  async function mutateData(mutator) {
+    const commit = async () => {
+      // Every tab reads the latest stored version inside the same origin-wide lock.
+      const draft = normData(await getV(DATA_KEY, defData()));
+      const replacement = mutator(draft);
+      const next = normData(replacement === undefined ? draft : replacement);
+      next.meta.updatedAt = new Date().toISOString();
+      await setV(DATA_KEY, next);
+      st.d = next;
+      return next;
+    };
+    if (typeof navigator !== "undefined" && navigator.locks?.request) {
+      return navigator.locks.request(DATA_KEY, commit);
+    }
+    // Older browsers still serialize concurrent operations within this tab.
+    const previous = mutateData.queue || Promise.resolve();
+    const operation = previous.catch(() => {}).then(commit);
+    mutateData.queue = operation.catch(() => {});
+    return operation;
+  }
+
+  function watchData() {
+    if (st.u.dataListener !== undefined || typeof GM_addValueChangeListener !== "function") return;
+    st.u.dataListener = GM_addValueChangeListener(DATA_KEY, (_key, _old, value, remote) => {
+      if (remote) st.d = normData(value);
+      // Do not replace a focused search field. Opening or filtering renders fresh data.
     });
   }
 
   async function getV(k, fb) {
     try {
-      const v = GM_getValue(k, fb);
-      return isP(v) ? await v : v;
-    } catch (_e) {
-      return fb;
+      return await GM_getValue(k, fb);
+    } catch (_error) {
+      st.u.loadFailed = true;
+      throw new Error("GitHub Trail: 无法读取本地数据 / Cannot read local storage.");
     }
   }
 
   async function setV(k, v) {
+    if (st.u.loadFailed) {
+      const message = st.c.language === "en" ? "Local data could not be loaded. Reload this page before saving to protect existing records." : "本地数据读取失败，为保护已有记录已停止写入。请修复存储权限后刷新页面。";
+      status(message, "error");
+      throw new Error(message);
+    }
+    // Snapshot before awaiting: later mutations must not alter a queued write.
+    const snapshot = JSON.parse(JSON.stringify(v));
+    const queues = setV.queues || (setV.queues = new Map());
+    const previous = queues.get(k) || Promise.resolve();
+    const operation = previous.catch(() => {}).then(() => GM_setValue(k, snapshot));
+    queues.set(k, operation);
     try {
-      const r = GM_setValue(k, v);
-      if (isP(r)) await r;
-    } catch (_e) {
-      // no-op
+      await operation;
+    } catch (_error) {
+      const message = st.c.language === "en" ? "Could not save locally. Check userscript storage permissions or available space." : "本地保存失败，请检查油猴存储权限或可用空间。";
+      status(message, "error");
+      throw new Error(message);
+    } finally {
+      if (queues.get(k) === operation) queues.delete(k);
     }
   }
 
@@ -1540,7 +1521,8 @@ ${aiIssueHtml}`;
       language: "zh-CN",
       maxItemsPerType: MAX,
       excludedPrefixes: [...EX],
-      ui: { listMode: "split" },
+      recordingPaused: false,
+      ui: { listMode: "merged", theme: "auto" },
       webdav: { enabled: false, baseUrl: "", username: "", password: "", fileName: FILE },
       ai: {
         apiUrl: "https://api.openai.com/v1/chat/completions",
@@ -1556,32 +1538,54 @@ ${aiIssueHtml}`;
   function normData(raw) {
     const d = raw && typeof raw === "object" ? raw : {};
     const out = defData();
-    out.version = Number(d.version || 1);
-    out.repo = normMap(d.repo);
-    out.user = normMap(d.user);
+    out.version = 1;
+    out.repo = normMap(d.repo, "repo");
+    out.user = normMap(d.user, "user");
     out.meta.updatedAt = d.meta && typeof d.meta.updatedAt === "string" ? d.meta.updatedAt : "";
     prune(out.repo, MAX);
     prune(out.user, MAX);
     return out;
   }
 
-  function normMap(raw) {
+  function normMap(raw, type) {
     const out = {};
-    if (!raw || typeof raw !== "object") return out;
-    for (const [k, v] of Object.entries(raw)) {
-      if (!v || typeof v !== "object") continue;
-      out[k] = cleanRec(v, k);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+    for (const [key, value] of Object.entries(raw)) {
+      const item = cleanRec(value, key, type);
+      if (!item) continue;
+      const previous = Object.hasOwn(out, item.key) ? out[item.key] : undefined;
+      if (!previous) out[item.key] = item;
+      else {
+        const winner = ts(previous.lastVisitedAt) >= ts(item.lastVisitedAt) ? previous : item;
+        out[item.key] = { ...winner, visitCount: Math.max(previous.visitCount, item.visitCount) };
+      }
     }
     return out;
+  }
+
+  function validateHistory(raw) {
+    const isMap = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+    if (!isMap(raw) || (!Object.hasOwn(raw, "repo") && !Object.hasOwn(raw, "user")) ||
+        (raw.version !== undefined && raw.version !== 1)) throw new Error(t("iu"));
+    for (const type of ["repo", "user"]) {
+      if (!Object.hasOwn(raw, type)) continue;
+      if (!isMap(raw[type])) throw new Error(t("iu"));
+      for (const [key, value] of Object.entries(raw[type])) {
+        if (!cleanRec(value, key, type)) throw new Error(t("iu"));
+      }
+    }
+    return normData(raw);
   }
 
   function normCfg(raw) {
     const out = defCfg();
     if (!raw || typeof raw !== "object") return out;
     out.language = raw.language === "en" ? "en" : "zh-CN";
-    out.maxItemsPerType = Number(raw.maxItemsPerType || MAX);
+    out.maxItemsPerType = Math.min(MAX, Math.max(1, Math.floor(Number(raw.maxItemsPerType)) || MAX));
+    out.recordingPaused = raw.recordingPaused === true;
     out.excludedPrefixes = Array.isArray(raw.excludedPrefixes) ? raw.excludedPrefixes.filter((x) => typeof x === "string") : [...EX];
-    out.ui.listMode = raw.ui && raw.ui.listMode === "merged" ? "merged" : "split";
+    out.ui.listMode = raw.ui && raw.ui.listMode === "split" ? "split" : "merged";
+    out.ui.theme = ["light", "dark"].includes(raw.ui?.theme) ? raw.ui.theme : "auto";
     const w = raw.webdav && typeof raw.webdav === "object" ? raw.webdav : {};
     out.webdav.enabled = !!w.enabled;
     out.webdav.baseUrl = String(w.baseUrl || "");
@@ -1602,7 +1606,7 @@ ${aiIssueHtml}`;
 
   function maxItems() {
     const n = Number(st.c.maxItemsPerType || MAX);
-    return Number.isFinite(n) && n > 0 ? Math.floor(n) : MAX;
+    return Number.isFinite(n) && n > 0 ? Math.min(MAX, Math.floor(n)) : MAX;
   }
 
   function clampTemp(value) {
@@ -1687,7 +1691,7 @@ ${aiIssueHtml}`;
     if (st.u.view === nextView) return;
     clearStatus();
     st.u.view = nextView;
-    requestAnimationFrame(() => renderSidebar());
+    requestAnimationFrame(() => { renderSidebar(); st.u.body.scrollTop=0; (st.u.body.querySelector("#gt-search") || st.u.tbtn).focus(); });
   }
 
   function cleanupLegacyUsers() {
