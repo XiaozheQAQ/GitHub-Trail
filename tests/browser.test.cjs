@@ -43,7 +43,7 @@ function seedData() {
 async function fixture(t, options = {}) {
   const theme = options.theme || 'dark';
   const context = await browser.newContext({ viewport: options.viewport || { width: 1440, height: 1000 },
-    colorScheme: theme === 'dark' ? 'dark' : 'light', reducedMotion: 'reduce', acceptDownloads: true });
+    colorScheme: theme === 'dark' ? 'dark' : 'light', reducedMotion: options.reducedMotion || 'reduce', acceptDownloads: true });
   t.after(() => context.close());
   const page = await context.newPage();
   const errors = [];
@@ -332,4 +332,145 @@ test('large histories load more and favorites persist through filter changes', a
   await page.locator('[data-pin]').click();
   await page.waitForFunction(() => window.__store['github-trail:data'].repo['xiaozheqaq/github-trail'].pinned === false);
   assert.equal(await rowLinks(page).count(), 0);
+});
+
+async function finishPanelMotion(page) {
+  await page.evaluate(async () => {
+    await new Promise(requestAnimationFrame);
+    const root = document.querySelector('#github-trail-root').shadowRoot;
+    const animations = [...root.querySelector('#gt-sidebar').getAnimations({ subtree: true }),
+      ...root.querySelector('.gt-backdrop').getAnimations()];
+    await Promise.allSettled(animations.map(animation => animation.finished));
+  });
+}
+
+test('closing animates before hiding, then restores focus, scrolling and host interaction', async t => {
+  const page = await fixture(t, { reducedMotion: 'no-preference' });
+  await page.evaluate(() => { document.body.style.overflow = 'scroll'; document.querySelector('#outside').focus(); });
+  await page.keyboard.press('Alt+Shift+H');
+  await page.locator('#gt-search').waitFor();
+  await finishPanelMotion(page);
+  const immediate = await page.evaluate(() => {
+    const root = document.querySelector('#github-trail-root').shadowRoot;
+    root.querySelector('#gt-close').click();
+    return { hidden: root.querySelector('#gt-sidebar').hidden, overflow: document.body.style.overflow,
+      outsideInert: document.querySelector('main').inert };
+  });
+  assert.equal(immediate.hidden, false, 'close must leave the panel visible for its exit animation');
+  assert.equal(immediate.overflow, 'hidden', 'scroll remains locked during exit');
+  assert.equal(immediate.outsideInert, true, 'host remains inert during exit');
+  await page.waitForFunction(() => document.querySelector('#github-trail-root').shadowRoot.querySelector('#gt-sidebar').hidden);
+  const finished = await page.evaluate(() => ({ focus: document.activeElement.id,
+    overflow: document.body.style.overflow, outsideInert: document.querySelector('main').inert,
+    backdropHidden: document.querySelector('#github-trail-root').shadowRoot.querySelector('.gt-backdrop').hidden }));
+  assert.deepEqual(finished, { focus: 'outside', overflow: 'scroll', outsideInert: false, backdropHidden: true });
+});
+
+test('reopening during exit cannot be hidden by an old close callback', async t => {
+  const page = await fixture(t, { reducedMotion: 'no-preference' });
+  await open(page);
+  const immediate = await page.evaluate(() => {
+    const root = document.querySelector('#github-trail-root').shadowRoot;
+    root.querySelector('#gt-close').click();
+    document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyH', key: 'H', altKey: true, shiftKey: true, bubbles: true }));
+    return { hidden: root.querySelector('#gt-sidebar').hidden,
+      expanded: root.querySelector('#gt-topbar-button').getAttribute('aria-expanded') };
+  });
+  assert.deepEqual(immediate, { hidden: false, expanded: 'true' });
+  // Exercise the delayed cleanup window from the superseded close operation.
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 700)));
+  const finished = await page.evaluate(() => {
+    const root = document.querySelector('#github-trail-root').shadowRoot;
+    return { hidden: root.querySelector('#gt-sidebar').hidden, backdropHidden: root.querySelector('.gt-backdrop').hidden,
+      overflow: document.body.style.overflow, outsideInert: document.querySelector('main').inert };
+  });
+  assert.deepEqual(finished, { hidden: false, backdropHidden: false, overflow: 'hidden', outsideInert: true });
+  await page.locator('#gt-search').fill('trail');
+  assert.equal(await rowLinks(page).count(), 1, 'reopened panel remains interactive');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => document.querySelector('#github-trail-root').shadowRoot.querySelector('#gt-sidebar').hidden);
+  assert.equal(await page.evaluate(() => document.body.style.overflow), '');
+});
+
+test('reduced motion closes synchronously without remaining animations or scroll locks', async t => {
+  const page = await fixture(t, { reducedMotion: 'reduce' });
+  await open(page);
+  const result = await page.evaluate(() => {
+    const root = document.querySelector('#github-trail-root').shadowRoot;
+    root.querySelector('#gt-close').click();
+    const running = [...root.querySelector('#gt-sidebar').getAnimations({ subtree: true }),
+      ...root.querySelector('.gt-backdrop').getAnimations()].filter(animation => animation.playState === 'running');
+    return { hidden: root.querySelector('#gt-sidebar').hidden, running: running.length,
+      overflow: document.body.style.overflow, outsideInert: document.querySelector('main').inert,
+      focus: root.activeElement?.id };
+  });
+  assert.deepEqual(result, { hidden: true, running: 0, overflow: '', outsideInert: false, focus: 'gt-topbar-button' });
+});
+
+test('hover feedback changes button and record appearance with a motion transition', async t => {
+  const page = await fixture(t, { reducedMotion: 'no-preference' });
+  await open(page);
+  await finishPanelMotion(page);
+  for (const selector of ['#gt-close', '.gt-record', '.gt-record [data-delete]']) {
+    const node = page.locator(selector).first();
+    await page.mouse.move(100, 100);
+    await finishPanelMotion(page);
+    await node.evaluate(async element => {
+      getComputedStyle(element).backgroundColor;
+      await Promise.allSettled(element.getAnimations().map(animation => animation.finished));
+    });
+    const before = await node.evaluate(element => {
+      const css = getComputedStyle(element);
+      return { background: css.backgroundColor, color: css.color };
+    });
+    if (selector === '.gt-record') await page.locator('#gt-sidebar').screenshot({ path: path.join(artifacts, 'motion-hover-before.png') });
+    await node.hover();
+    await node.evaluate(async element => {
+      getComputedStyle(element).backgroundColor;
+      await Promise.allSettled(element.getAnimations().map(animation => animation.finished));
+    });
+    const after = await node.evaluate(element => {
+      const css = getComputedStyle(element);
+      return { background: css.backgroundColor, color: css.color, durations: css.transitionDuration };
+    });
+    assert.notDeepEqual({ background: after.background, color: after.color }, before, `${selector} should visibly respond to hover`);
+    assert.ok(after.durations.split(',').some(duration => parseFloat(duration) > 0), `${selector} should interpolate hover styles`);
+    if (selector === '.gt-record') await page.locator('#gt-sidebar').screenshot({ path: path.join(artifacts, 'motion-hover-after.png') });
+  }
+});
+
+test('switching to reduced motion during exit finishes cleanup without a stale lock', async t => {
+  const page = await fixture(t, { reducedMotion: 'no-preference' });
+  await open(page);
+  await finishPanelMotion(page);
+  assert.equal(await page.locator('#gt-close').evaluate(button => {
+    button.click();
+    return button.closest('#gt-sidebar').hidden;
+  }), false);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.waitForFunction(() => document.querySelector('#github-trail-root').shadowRoot.querySelector('#gt-sidebar').hidden);
+  const result = await page.evaluate(() => {
+    const root = document.querySelector('#github-trail-root').shadowRoot;
+    return { overflow: document.body.style.overflow, outsideInert: document.querySelector('main').inert,
+      backdropHidden: root.querySelector('.gt-backdrop').hidden,
+      animations: root.querySelector('#gt-sidebar').getAnimations().filter(animation => animation.playState === 'running').length };
+  });
+  assert.deepEqual(result, { overflow: '', outsideInert: false, backdropHidden: true, animations: 0 });
+});
+
+test('holding the keyboard shortcut does not repeatedly open and close the panel', async t => {
+  const page = await fixture(t);
+  const result = await page.evaluate(() => {
+    const root = document.querySelector('#github-trail-root').shadowRoot;
+    const shortcut = repeat => new KeyboardEvent('keydown', { key: 'H', code: 'KeyH', altKey: true, shiftKey: true, repeat, bubbles: true });
+    document.dispatchEvent(shortcut(false));
+    for (let i = 0; i < 5; i++) {
+      document.dispatchEvent(shortcut(true));
+      root.querySelector('#gt-search').dispatchEvent(shortcut(true));
+    }
+    const stayedOpen = !root.querySelector('#gt-sidebar').hidden;
+    root.querySelector('#gt-search').dispatchEvent(shortcut(false));
+    return { stayedOpen, closedOnce: root.querySelector('#gt-sidebar').hidden, overflow: document.body.style.overflow };
+  });
+  assert.deepEqual(result, { stayedOpen: true, closedOnce: true, overflow: '' });
 });

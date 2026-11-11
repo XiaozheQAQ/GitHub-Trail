@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         GitHub Trail
 // @namespace    https://github.com/
-// @version      1.2.0
+// @version      1.2.1
 // @description  Record visited GitHub repositories and user profiles with local JSON + optional WebDAV sync.
 // @author       GitHub Trail
 // @license      AGPL-3.0-only
@@ -124,7 +124,7 @@
   const st = {
     d: defData(), c: defCfg(), ah: defAiHistory(),
     u: {
-      mounted: false, open: false, syncing: false, view: "history", showAll: false,
+      mounted: false, open: false, closing: false, closeEpoch: 0, closeTimer: null, closeHandler: null, viewAnimation: null, syncing: false, view: "history", showAll: false,
       status: "", statusType: "info", topBtn: null, obs: null,
       sb: null, bd: null, title: null, tbtn: null, abtn: null, cbtn: null, body: null,
       statusNode: null, syncBtn: null, importInput: null,
@@ -168,7 +168,7 @@
     window.addEventListener("popstate",onRoute);
     window.addEventListener("load",onRoute);
     document.addEventListener("keydown",ev=>{
-      if (ev.altKey && ev.shiftKey && ev.code==="KeyH") { ev.preventDefault(); toggleSidebar(); }
+      if (!ev.repeat && ev.altKey && ev.shiftKey && ev.code==="KeyH") { ev.preventDefault(); toggleSidebar(); }
     });
   }
 
@@ -195,7 +195,52 @@
 .gt-settings-grid{display:grid;gap:12px} .gt-settings-grid label{font-size:12px;font-weight:600} .gt-settings-grid label>input,.gt-settings-grid label>select,.gt-settings-grid label>textarea{display:block;margin-top:6px;font-weight:400} .gt-settings-grid .gt-check{display:flex;gap:8px;align-items:center;font-weight:400} .gt-settings-grid .gt-check input{margin:0} .gt-settings-section{margin-bottom:14px} details.Box>summary{list-style:none;cursor:pointer;padding:14px;font-weight:600;background:var(--gt-surface)} details.Box>summary::after{content:'+';float:right;color:var(--gt-muted)} details.Box[open]>summary::after{content:'−'} .gt-settings-actions{position:sticky;bottom:-20px;padding:12px 0 20px;background:var(--gt-bg);display:flex;gap:10px} .gt-settings-actions button{flex:1} .gt-settings-danger{margin-top:20px;border-top:1px solid var(--gt-border);padding:16px 0}.gt-danger-note{margin-bottom:10px} .gt-ai-note{line-height:1.7;margin-bottom:10px}.gt-ai-issue{padding:12px;border:1px solid var(--gt-border);border-radius:8px;margin:12px 0;font-size:12px}
 .gt-ai-box{padding:20px;border:1px solid var(--gt-border);border-radius:12px;background:var(--gt-surface)} .gt-chat-list{display:flex;flex-direction:column;gap:14px} .gt-chat-msg{padding:12px;border:1px solid var(--gt-border);border-radius:12px;min-width:0}.gt-chat-msg.is-user{background:var(--gt-tint)} .gt-chat-role{font-size:11px;color:var(--gt-muted);margin-bottom:8px}.gt-chat-content{font-size:13px;line-height:1.7;overflow-wrap:anywhere}.gt-chat-content p:last-child{margin:0}.gt-chat-content pre{overflow:auto;background:var(--gt-surface);padding:10px;border-radius:8px;white-space:pre-wrap}.gt-chat-content code{font-family:ui-monospace,Consolas,monospace;font-size:12px}.gt-chat-content ul,.gt-chat-content ol{padding-left:20px}.gt-chat-content h1,.gt-chat-content h2,.gt-chat-content h3{font-size:16px;margin:14px 0 8px}.gt-ai-thread-viewport{min-width:0}.gt-ai-followup{display:grid;gap:8px;margin-top:18px}.gt-ai-history{border:1px solid var(--gt-border);border-radius:10px;margin-bottom:14px}.gt-ai-history summary{padding:10px;font-size:12px;color:var(--gt-muted);cursor:pointer}.gt-ai-history-list{padding:10px;display:grid;gap:8px;max-height:240px;overflow:auto}.gt-ai-history-item{padding:10px;border:1px solid var(--gt-border);border-radius:8px}.gt-ai-history-item .meta{color:var(--gt-muted);font-size:11px;margin:5px 0}.gt-about-wrap{display:grid;gap:14px}.gt-about-card{padding:18px;border:1px solid var(--gt-border);border-radius:12px;background:var(--gt-surface)}.gt-about-hero{display:flex;align-items:center;gap:14px}.gt-about-logo{width:54px;height:54px;border-radius:12px}.gt-about-title{font-size:18px}.gt-about-sub,.gt-about-version{font-size:12px;color:var(--gt-muted);margin:6px 0}.gt-about-text{font-size:13px;line-height:1.8}.gt-about-list{padding-left:18px}.gt-about-list li{margin:8px 0}.mb-2{margin-bottom:8px}.mb-3{margin-bottom:14px}.text-small{font-size:12px}
 @media(max-width:380px){.gt-body{padding:14px}.gt-head{padding:14px}.gt-filter-row{gap:5px}.gt-record{padding:10px;gap:5px}.gt-record-icon{display:none}.gt-settings-actions{bottom:-14px}.gt-intro h2{font-size:21px}.gt-fab-wrap{right:12px;bottom:12px}}
-@media(prefers-reduced-motion:no-preference){.gt-sidebar.is-open{animation:gt-in .18s ease-out}@keyframes gt-in{from{opacity:.5;transform:translateX(24px)}to{opacity:1;transform:none}}}
+
+/* Motion is limited to transforms, opacity and interaction feedback. */
+:host{--gt-ease:cubic-bezier(.22,1,.36,1);--gt-danger-tint:#fff1f0;--gt-row-hover:#f0f6fc}
+:host([data-theme=dark]){--gt-danger-tint:#382022;--gt-row-hover:#172331}
+.gt-sidebar{transform:translateX(100%);transition:transform 210ms cubic-bezier(.4,0,.2,1)}
+.gt-sidebar.is-open{transform:translateX(0);transition-duration:300ms;transition-timing-function:var(--gt-ease)}
+.gt-sidebar.is-closing{pointer-events:none}
+.gt-backdrop{opacity:0;transition:opacity 180ms ease}
+.gt-backdrop.is-open{opacity:1;transition-duration:240ms}
+button{transition:background-color 150ms ease,border-color 150ms ease,color 150ms ease,box-shadow 150ms ease,transform 120ms ease,filter 150ms ease}
+button:active:not(:disabled){transform:scale(.96);box-shadow:none}
+.gt-head-actions button{border-radius:9px}
+.gt-record{transition:background-color 160ms ease,box-shadow 160ms ease}
+.gt-record-icon{transition:background-color 160ms ease,border-color 160ms ease,color 160ms ease,transform 160ms var(--gt-ease)}
+.gt-record-name{transition:color 150ms ease}
+.gt-record-actions button{width:30px;height:30px;border-radius:7px}
+.gt-record:focus-within{background:var(--gt-row-hover);box-shadow:inset 3px 0 var(--gt-accent)}
+.gt-record-actions button[aria-pressed=true]{background:var(--gt-tint)}
+#gt-topbar-button{transition:transform 180ms var(--gt-ease),box-shadow 180ms ease,border-color 150ms ease,background-color 150ms ease}
+#gt-topbar-button svg{transition:transform 200ms var(--gt-ease)}
+input:not([type=checkbox]):not([type=range]),select,textarea{transition:border-color 150ms ease,box-shadow 150ms ease}
+input:not([type=checkbox]):not([type=range]):focus,select:focus,textarea:focus{border-color:var(--gt-accent);box-shadow:0 0 0 3px var(--gt-tint)}
+summary{border-radius:8px;transition:background-color 150ms ease,color 150ms ease}
+details.Box>summary::after{transition:color 150ms ease}
+@media(hover:hover){
+  .gt-head-actions button:hover:not(:disabled){background:var(--gt-tint);color:var(--gt-accent);transform:translateY(-1px)}
+  .gt-head-actions #gt-close:hover{background:var(--gt-danger-tint);color:var(--gt-danger)}
+  .gt-record:hover{background:var(--gt-row-hover);box-shadow:inset 3px 0 var(--gt-accent)}
+  .gt-record:hover .gt-record-icon{background:var(--gt-tint);color:var(--gt-accent);border-color:var(--gt-accent);transform:translateY(-1px)}
+  .gt-record-link:hover .gt-record-name{color:var(--gt-accent)}
+  .gt-record-actions button:hover:not(:disabled){background:var(--gt-tint);color:var(--gt-accent);transform:scale(1.08)}
+  .gt-record-actions button[data-delete]:hover:not(:disabled){background:var(--gt-danger-tint);color:var(--gt-danger)}
+  .gt-tool-btn:hover:not(:disabled),.gt-settings-actions button:hover:not(:disabled),.gt-star-filter:hover,.gt-view-all:hover{border-color:var(--gt-accent);box-shadow:0 2px 6px #0001;transform:translateY(-1px)}
+  .BtnGroup button[aria-pressed=false]:hover{background:var(--gt-hover);color:var(--gt-fg)}
+  #gt-topbar-button:hover{background:var(--gt-surface);border-color:var(--gt-accent);box-shadow:0 8px 24px #0003;transform:translateY(-2px)}
+  #gt-topbar-button:hover svg{transform:rotate(-12deg)}
+  details.Box>summary:hover,.gt-ai-history summary:hover{background:var(--gt-hover);color:var(--gt-accent)}
+  .gt-settings-grid summary:hover{color:var(--gt-accent)}
+}
+/* Pressed feedback wins over hover, including on touch screens. */
+.gt-head-actions button:active:not(:disabled),.gt-record-actions button:active:not(:disabled),.gt-tool-btn:active:not(:disabled),#gt-topbar-button:active{transform:scale(.95);box-shadow:none}
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition:none!important;animation:none!important;scroll-behavior:auto!important}
+  button,.gt-record-icon,#gt-topbar-button svg{transform:none!important}
+}
+
 `;
     st.u.root.appendChild(el);
     document.body.appendChild(host);
@@ -231,7 +276,7 @@
     sb.addEventListener("keydown", (ev) => {
       // Keep GitHub's single-key shortcuts away from the panel's inputs.
       ev.stopPropagation();
-      if (ev.altKey && ev.shiftKey && ev.code === "KeyH") { ev.preventDefault(); closeSidebar(); return; }
+      if (!ev.repeat && ev.altKey && ev.shiftKey && ev.code === "KeyH") { ev.preventDefault(); toggleSidebar(); return; }
       if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); closeSidebar(); }
       if (ev.key === "Tab") {
         const items = [...sb.querySelectorAll('button,a[href],input,select,textarea,summary,[tabindex="0"]')].filter(n => !n.disabled && n.getClientRects().length);
@@ -239,6 +284,12 @@
         if (ev.shiftKey && active===first) { ev.preventDefault(); last?.focus(); }
         else if (!ev.shiftKey && active===last) { ev.preventDefault(); first?.focus(); }
       }
+    });
+    st.u.motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    st.u.motionQuery.addEventListener("change", () => {
+      if (!st.u.motionQuery.matches) return;
+      st.u.viewAnimation?.cancel();
+      if (st.u.closing) finishSidebarClose(st.u.closeEpoch);
     });
     renderSidebar();
   }
@@ -264,7 +315,7 @@
     if (!st.u.host.isConnected) document.body.appendChild(st.u.host);
     const wrap = getWrap(), btn = getBtn();
     if (!wrap.contains(btn)) wrap.appendChild(btn);
-    wrap.className = "gt-fab-wrap"; wrap.hidden = st.u.open;
+    wrap.classList.add("gt-fab-wrap"); wrap.hidden = st.u.open || st.u.closing;
     if (!wrap.isConnected) st.u.root.appendChild(wrap);
   }
 
@@ -293,9 +344,9 @@
     let b = st.u.topBtn;
     if (!b) {
       b=document.createElement("button"); b.id="gt-topbar-button"; b.type="button";
+      b.innerHTML = `${SVG.h}<span>Trail</span>`;
       b.addEventListener("click",toggleSidebar); st.u.topBtn=b;
     }
-    b.innerHTML = `${SVG.h}<span>Trail</span>`;
     b.title=t("ta"); b.setAttribute("aria-label",t("ta")); b.setAttribute("aria-haspopup","dialog");
     b.setAttribute("aria-expanded",String(st.u.open)); b.setAttribute("aria-controls","gt-sidebar");
     return b;
@@ -316,27 +367,77 @@
   function openSidebar() {
     if (st.u.open) return;
     ensureSidebar();
-    st.u.previousFocus=document.activeElement; st.u.open=true;
-    st.u.sb.hidden=false; st.u.bd.hidden=false; st.u.sb.classList.add("is-open");
-    st.u.oldOverflow=document.body.style.overflow; document.body.style.overflow="hidden";
-    st.u.inertNodes=[...document.body.children].filter(n=>n!==st.u.host && !n.inert);
-    st.u.inertNodes.forEach(n=>n.inert=true);
-    ensureTopbar(); renderSidebar();
-    (st.u.body.querySelector("#gt-search") || st.u.cbtn).focus();
+    const reversing = st.u.closing;
+    cancelSidebarClose();
+    // A reversed exit still owns the original focus and background lock.
+    if (!reversing) {
+      st.u.previousFocus = document.activeElement;
+      st.u.oldOverflow = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      st.u.inertNodes = [...document.body.children].filter(node => node !== st.u.host && !node.inert);
+      st.u.inertNodes.forEach(node => { node.inert = true; });
+    }
+    st.u.open = true;
+    st.u.sb.hidden = false;
+    st.u.bd.hidden = false;
+    if (!reversing) {
+      renderSidebar();
+      // Establish the off-screen starting style before enabling the transition.
+      void st.u.sb.offsetWidth;
+    }
+    st.u.sb.classList.add("is-open");
+    st.u.bd.classList.add("is-open");
+    ensureTopbar();
+    (st.u.body.querySelector("#gt-search") || st.u.cbtn).focus({ preventScroll: true });
+  }
+
+  function cancelSidebarClose() {
+    st.u.closeEpoch += 1;
+    clearTimeout(st.u.closeTimer);
+    st.u.closeTimer = null;
+    if (st.u.closeHandler) st.u.sb.removeEventListener("transitionend", st.u.closeHandler);
+    st.u.closeHandler = null;
+    st.u.closing = false;
+    st.u.sb.classList.remove("is-closing");
+  }
+
+  function finishSidebarClose(epoch) {
+    if (epoch !== st.u.closeEpoch || st.u.open || !st.u.closing) return;
+    cancelSidebarClose();
+    st.u.sb.hidden = true;
+    st.u.bd.hidden = true;
+    document.body.style.overflow = st.u.oldOverflow || "";
+    st.u.inertNodes?.forEach(node => { node.inert = false; });
+    st.u.inertNodes = [];
+    ensureTopbar();
+    const previous = st.u.previousFocus;
+    if (previous?.isConnected && previous !== document.body && previous !== st.u.host) previous.focus({ preventScroll: true });
+    else st.u.topBtn?.focus({ preventScroll: true });
   }
 
   function closeSidebar() {
     if (!st.u.open) return;
-    st.u.open=false; st.u.sb.hidden=true; st.u.bd.hidden=true; st.u.sb.classList.remove("is-open");
-    document.body.style.overflow=st.u.oldOverflow || "";
-    st.u.inertNodes?.forEach(n=>n.inert=false); st.u.inertNodes=[];
+    st.u.open = false;
+    st.u.closing = true;
+    st.u.viewAnimation?.cancel();
+    const epoch = ++st.u.closeEpoch;
+    st.u.sb.classList.add("is-closing");
+    st.u.sb.classList.remove("is-open");
+    st.u.bd.classList.remove("is-open");
     ensureTopbar();
-    const previous=st.u.previousFocus;
-    if (previous?.isConnected && previous!==document.body && previous!==st.u.host) previous.focus();
-    else st.u.topBtn?.focus();
+    if (st.u.motionQuery.matches) {
+      finishSidebarClose(epoch);
+      return;
+    }
+    st.u.closeHandler = event => {
+      if (event.target === st.u.sb && event.propertyName === "transform") finishSidebarClose(epoch);
+    };
+    st.u.sb.addEventListener("transitionend", st.u.closeHandler);
+    // Covers interrupted transitions, background tabs and missing transitionend.
+    st.u.closeTimer = setTimeout(() => finishSidebarClose(epoch), 340);
   }
 
-  function renderSidebar() {
+  function renderSidebar(animate = false, direction = 1) {
     if (!st.u.mounted) return;
     const isHistory = st.u.view === "history";
     const isSettings = st.u.view === "settings";
@@ -371,7 +472,7 @@
     else if (isAbout) renderAbout();
     else if (isAnalysis) renderAnalysis();
     else renderHistory();
-    triggerViewAnimation();
+    if (animate) triggerViewAnimation(direction);
   }
 
   function renderHistory() {
@@ -506,7 +607,7 @@ ${filtered.length>shown.length ? `<div class="gt-view-all-wrap"><button id="gt-v
       <li>${e(t("al"))}</li>
       <li>${e(t("an"))}</li>
     </ul>
-    <div class="gt-about-version">Version: 1.2.0</div>
+    <div class="gt-about-version">Version: 1.2.1</div>
   </div>
 </div>`;
     st.u.statusNode = null;
@@ -1666,32 +1767,28 @@ ${st.u.aiError ? `<div role="alert" class="gt-ai-issue">${e(st.u.aiError)}</div>
     paintStatus();
   }
 
-  function triggerViewAnimation() {
-    const body = st.u.body;
-    if (!body) return;
-    body.classList.remove("gt-view-enter");
-    // Force reflow so repeated view switches still replay animation.
-    void body.offsetWidth;
-    body.classList.add("gt-view-enter");
-    const style = window.getComputedStyle(body);
-    const duration = Number.parseFloat(style.animationDuration || "0");
-    if (!Number.isFinite(duration) || duration <= 0) {
-      requestAnimationFrame(() => body.classList.remove("gt-view-enter"));
-      return;
-    }
-    const done = () => {
-      body.classList.remove("gt-view-enter");
-      body.removeEventListener("animationend", done);
-    };
-    body.addEventListener("animationend", done);
+  function triggerViewAnimation(direction = 1) {
+    st.u.viewAnimation?.cancel();
+    st.u.viewAnimation = null;
+    if (!st.u.open || st.u.motionQuery.matches || typeof st.u.body.animate !== "function") return;
+    // Only animate view navigation, never search/input-driven list updates.
+    const animation = st.u.body.animate([
+      { opacity: 0, transform: `translateX(${direction * 12}px)` },
+      { opacity: 1, transform: "translateX(0)" }
+    ], { duration: 180, easing: "cubic-bezier(.2,.8,.2,1)" });
+    st.u.viewAnimation = animation;
+    animation.finished.then(() => {
+      if (st.u.viewAnimation === animation) st.u.viewAnimation = null;
+    }).catch(() => {}); // Cancellation is expected when navigating or closing quickly.
   }
 
   function switchView(nextView) {
-    if (!st.u.mounted) return;
-    if (st.u.view === nextView) return;
+    if (!st.u.mounted || !st.u.open || st.u.view === nextView) return;
     clearStatus();
     st.u.view = nextView;
-    requestAnimationFrame(() => { renderSidebar(); st.u.body.scrollTop=0; (st.u.body.querySelector("#gt-search") || st.u.tbtn).focus(); });
+    renderSidebar(true, nextView === "history" ? -1 : 1);
+    st.u.body.scrollTop = 0;
+    (st.u.body.querySelector("#gt-search") || st.u.tbtn).focus({ preventScroll: true });
   }
 
   function cleanupLegacyUsers() {
